@@ -1,0 +1,16 @@
+HikingApp/
+├── app/
+│   ├── build.gradle.kts
+│   └── src/
+│       └── main/
+│           ├── AndroidManifest.xml
+│           ├── java/com/example/hikingapp/
+│           │   ├── data/          # CSV parsers, file storage, config
+│           │   ├── service/       # Foreground GPS & MediaSession service
+│           │   ├── ui/            # Jetpack Compose screens (Main, Map, Settings)
+│           │   └── utils/         # Naismith's rule, geometry, coordinate transforms
+│           └── res/
+│               ├── drawable/
+│               └── values/
+├── build.gradle.kts
+└── settings.gradle.kts

@@ -1,0 +1,12 @@
+ Just saw something unbelievable. I had spent two days foostering around with gemini, python and kivy trying to generate an app. When it came to putting it on the phone it seemed almost impossible to get it to run past their security.
+
+So, I asked Gemini what the best way to develop an android app was. And they said use Kotlin. (I'd never used it and barely hear of it.... but turns out it's a variation of Java with extra features to make it less wordy and more reliable.
+
+Anyway, I asked how I should develop it and I was told to create a project.md file and I did. I spent a day and it nearly worked. Looked kindov cool. I was pleased. Unfortunately, the next day as we continued the process (not I didn't write a line of code. Gemini would create it and I copied it into the IDE (Android Studio). Any compiler errors I would give back to gemini. Anyway, we were foostering away and the project got more unweildy and lost functionality and I despaired of it ever working. So I abandoned that version, but I updated project.md because I knew that would help me create a working version.
+I also created an implementation.md file which was guidelines on how it was to be constructed.
+
+Anyway, I eventually started up a new project in Android Studio (previous project I just applied it to a directory rather than selecting new) and I was asked if I wanted to use AI. So, I asked if it would look at my two md files and if it would suggest improvements. It said they were really good and would it be OK if gemini created a plan. Sure, go ahead I said. (it had an agent that it could get to create files and do stuff.)
+
+Well, it had the plan and various milestones and it said it was in progress for the first one and after some minutes it said twas done and it went onto the next stage. It would write files and compile them and sometimes get errors and fix them and I'm not sure how long it took, but it could have been 5 minutes and the thing works (at least on an emulator. I need to copy it to a phone to see if GPS and bluetooth works.
+
+I spent the next hour just walking around stunned. Really bleeding amazing.

@@ -1,7 +1,7 @@
 # Hiking App Implementation Blueprint (implementation.md)
 
 ## 1. Core Architecture & Coordinate System
-- **Local Metric Space:** All spatial layout, calculations, and canvas drawing use a flat Cartesian coordinate system (`x` for Easting in meters, `y` for Northing in meters), scoped within a local 100km x 100km area. This ensures simple calculations for bearing, distance, speed, and 2D canvas mapping without global scale distortion.
+- **Local Metric Space:** All spatial layout, calculations, and canvas drawing use a flat Cartesian coordinate system (`x` for Easting in meters, `y` for Northing in meters), assuming that the earth is flat. This is a reasonable assumption for a hiking app which only concerns itself with a relatively small part of earth's surface area. This ensures simple calculations for bearing, distance, speed, and 2D canvas mapping without global scale distortion.
 - **Single Source of Truth:** `RouteManager` holds all active runtime state (waypoints, breadcrumbs, current index, and application logs).
 - **Strict Separation of Concerns:** UI screens only render state and capture gestures. Math, parsing, and state management live exclusively in dedicated helper classes.
 

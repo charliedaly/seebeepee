@@ -33,4 +33,28 @@ class AppPreferences(context: Context) {
     var autoTrack: Boolean
         get() = prefs.getBoolean("auto_track", true)
         set(value) = prefs.edit().putBoolean("auto_track", value).apply()
+
+    var showWaypointName: Boolean
+        get() = prefs.getBoolean("show_waypoint_name", true)
+        set(value) = prefs.edit().putBoolean("show_waypoint_name", value).apply()
+
+    var showWaypointAltitude: Boolean
+        get() = prefs.getBoolean("show_waypoint_altitude", true)
+        set(value) = prefs.edit().putBoolean("show_waypoint_altitude", value).apply()
+
+    var showWaypointBearing: Boolean
+        get() = prefs.getBoolean("show_waypoint_bearing", false)
+        set(value) = prefs.edit().putBoolean("show_waypoint_bearing", value).apply()
+
+    var showWaypoints: Boolean
+        get() = prefs.getBoolean("show_waypoints", true)
+        set(value) = prefs.edit().putBoolean("show_waypoints", value).apply()
+
+    var showBreadcrumbs: Boolean
+        get() = prefs.getBoolean("show_breadcrumbs", true)
+        set(value) = prefs.edit().putBoolean("show_breadcrumbs", value).apply()
+
+    var showGridlines: Boolean
+        get() = prefs.getBoolean("show_gridlines", true)
+        set(value) = prefs.edit().putBoolean("show_gridlines", value).apply()
 }

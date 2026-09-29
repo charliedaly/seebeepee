@@ -68,5 +68,21 @@ Features include:
   - build pass
   - app does not crash
   - critic_agent verifies application stability and alignment with requirements
+
+### Task_5_RefineMainNavigationScreen: Refine Main Navigation Screen UI and features according to changes.md: title bar with file load icon, route filename minus extension, and total route length (km) + estimated time (hh:mm) without '(Irish Grid)'; succinct 6-digit grid references (Position, Bearing, Distance, Time, Target) in top section without file loaded toast message; waypoint table using 6-digit coordinates and compact layout without final row totals; overall hike statistics in clean two-line format; bottom icon bar with start/finish GPS toggle, globe icon for map screen, and transparent gear icon for settings.
+- **Status:** COMPLETED
+- **Updates:** Successfully refined Main Navigation Screen according to changes.md: updated title bar with route filename minus extension, total route length, estimated time, and file loader icon; succinct 6-digit grid references in top section; compact waypoint table without totals; two-line overall hike statistics; and uniform bottom icon bar with start/finish GPS toggle, map globe icon, and transparent settings gear icon. Verified with build and unit tests.
+- **Acceptance Criteria:**
+  - Main Navigation Screen UI and features match changes.md refinements
+  - project builds successfully
+
+### Task_6_RefineMapScreenAndSettings: Refine Map Screen, Settings, and HUD features according to changes.md: title bar showing route filename with bottom-right compass/nav and gear icons; 2-digit grid markings; waypoint label deduplication for identical coordinates; map settings for Name, Altitude, and Bearing parallel to leg near originating waypoint; extra buffer area around map canvas; out-of-bounds red arrow indicator pointing from current waypoint to current position with distance; recording confirmation prompt if current position is outside map; clean HUD removing waypoint count, breadcrumb count, and zoom text.
+- **Status:** COMPLETED
+- **Updates:** Successfully implemented Task 6: Refined Map Screen with route filename title, gear and nav bottom-right icons, 2-digit grid markings, waypoint label deduplication for identical coordinates, map settings for Name, Altitude, and Bearing parallel to legs, extra map buffer area, out-of-bounds red arrow position indicator, recording confirmation prompt for off-map positions, and clean HUD. Verified with successful gradle build and passing unit tests.
+- **Acceptance Criteria:**
+  - Map Screen, Settings, and HUD match changes.md refinements
+  - make sure all existing tests pass
+  - build pass
+  - app does not crash
 - **Duration:** N/A
 

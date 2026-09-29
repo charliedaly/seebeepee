@@ -1,6 +1,8 @@
 package com.example.seebeepee.ui
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,9 +32,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.example.seebeepee.model.RouteManager
 import com.example.seebeepee.service.HikingForegroundService
 import com.example.seebeepee.ui.theme.SeeBeePeeTheme
+import com.example.seebeepee.util.CoordinateUtils
 import com.example.seebeepee.util.RouteParser
 import com.example.seebeepee.viewmodel.MainViewModel
 import kotlinx.coroutines.launch
@@ -53,6 +57,7 @@ fun MainScreen(
     val waypoints = RouteManager.waypoints
 
     var isTrackingActive by remember { mutableStateOf(false) }
+    var showSaveGpxDialog by remember { mutableStateOf(false) }
 
     // File picker launcher for CSV/GPX route files
     val filePickerLauncher = rememberLauncherForActivityResult(
@@ -69,9 +74,8 @@ fun MainScreen(
                 }
 
                 if (parsedWaypoints.isNotEmpty()) {
-                    val fileName = uri.lastPathSegment ?: "Imported Route"
+                    val fileName = (uri.lastPathSegment ?: "Imported Route").substringBeforeLast(".")
                     viewModel.loadRoute(fileName, parsedWaypoints)
-                    viewModel.gpsStatus = "Route Loaded: $fileName"
                 }
             } catch (e: Exception) {
                 RouteManager.logError("Error opening route file: ${e.message}")
@@ -89,79 +93,207 @@ fun MainScreen(
         }
     }
 
+    // Save GPX Dialog when stopping tracking
+    if (showSaveGpxDialog) {
+        AlertDialog(
+            onDismissRequest = { showSaveGpxDialog = false },
+            title = { Text("Save Breadcrumbs as GPX") },
+            text = { Text("Do you want to save your hike breadcrumbs as a GPX track before stopping?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    RouteManager.persistUnsavedBreadcrumbs()
+                    showSaveGpxDialog = false
+                    viewModel.gpsStatus = "Breadcrumbs saved to GPX"
+                }) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    RouteManager.clearBreadcrumbs()
+                    showSaveGpxDialog = false
+                    viewModel.gpsStatus = "Breadcrumbs discarded"
+                }) {
+                    Text("Discard")
+                }
+            }
+        )
+    }
+
+    var showOutsideMapConfirmation by remember { mutableStateOf(false) }
+
+    val startTrackingAction = {
+        val serviceIntent = Intent(context, HikingForegroundService::class.java)
+        try {
+            val hasFine = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+            val hasCoarse = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+
+            if (!hasFine && !hasCoarse) {
+                RouteManager.logError("Location permissions missing when starting GPS tracking.")
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(serviceIntent)
+            } else {
+                context.startService(serviceIntent)
+            }
+            isTrackingActive = true
+            viewModel.gpsStatus = "GPS Tracking Active"
+        } catch (e: SecurityException) {
+            RouteManager.logError("SecurityException starting service: ${e.message}")
+            isTrackingActive = false
+            viewModel.gpsStatus = "Tracking Failed (Permission Denied)"
+        } catch (e: Exception) {
+            RouteManager.logError("Error starting service: ${e.message}")
+            isTrackingActive = false
+            viewModel.gpsStatus = "Tracking Failed"
+        }
+    }
+
+    if (showOutsideMapConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showOutsideMapConfirmation = false },
+            title = { Text("Are you sure?") },
+            text = { Text("Current position is outside map area") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showOutsideMapConfirmation = false
+                    startTrackingAction()
+                }) {
+                    Text("Start Anyway")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showOutsideMapConfirmation = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(text = RouteManager.currentRouteName, maxLines = 1) },
+                title = {
+                    Column {
+                        val routeTitle = RouteManager.currentRouteName.substringBeforeLast(".")
+                        Text(
+                            text = if (routeTitle.equals("No Route Loaded", true)) "No Route Loaded" else routeTitle,
+                            maxLines = 1,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (waypoints.isNotEmpty()) {
+                            val totalDistKm = viewModel.totalDistance / 1000.0
+                            val totalClimbM = viewModel.totalClimb
+                            val totalTimeStr = formatHoursMinutes(viewModel.totalTimeRequired)
+                            Text(
+                                text = String.format(Locale.US, "Distance %.1fkm Altitude %.0fm Time %s", totalDistKm, totalClimbM, totalTimeStr),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
+                            )
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
                 ),
                 actions = {
-                    // Tracking Service Toggle Button
-                    IconButton(onClick = {
-                        val serviceIntent = Intent(context, HikingForegroundService::class.java)
-                        if (isTrackingActive) {
-                            serviceIntent.action = HikingForegroundService.ACTION_STOP
-                            context.startService(serviceIntent)
-                            isTrackingActive = false
-                            viewModel.gpsStatus = "GPS Tracking Paused"
-                        } else {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                context.startForegroundService(serviceIntent)
-                            } else {
-                                context.startService(serviceIntent)
-                            }
-                            isTrackingActive = true
-                            viewModel.gpsStatus = "GPS Tracking Active (Foreground)"
-                        }
-                    }) {
+                    // File load icon in the title section to open route file picker
+                    IconButton(onClick = { filePickerLauncher.launch(arrayOf("*/*")) }) {
                         Icon(
-                            imageVector = if (isTrackingActive) Icons.Default.Stop else Icons.Default.PlayArrow,
-                            contentDescription = if (isTrackingActive) "Stop Tracking" else "Start Tracking",
-                            tint = if (isTrackingActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                            imageVector = Icons.Default.FileOpen,
+                            contentDescription = "Load Route File",
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                     }
                 }
             )
         },
-        floatingActionButton = {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                modifier = Modifier.padding(bottom = 16.dp, end = 16.dp)
+        bottomBar = {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding(),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                tonalElevation = 3.dp
             ) {
-                // File Picker FAB
-                FloatingActionButton(
-                    onClick = { filePickerLauncher.launch(arrayOf("*/*")) },
-                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.FileOpen,
-                        contentDescription = "Open Route File",
-                        tint = MaterialTheme.colorScheme.onTertiaryContainer
-                    )
-                }
-                // Settings Toggle FAB
-                FloatingActionButton(
-                    onClick = { viewModel.showSettings = !viewModel.showSettings },
-                    containerColor = if (viewModel.showSettings) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primaryContainer
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Settings,
-                        contentDescription = "Toggle Settings",
-                        tint = if (viewModel.showSettings) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                }
-                // Map Switch FAB
-                FloatingActionButton(
-                    onClick = onNavigateToMap,
-                    containerColor = MaterialTheme.colorScheme.primary
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Map,
-                        contentDescription = "Switch to Map",
-                        tint = MaterialTheme.colorScheme.onPrimary
-                    )
+                    // Start / Finish Button
+                    Button(
+                        onClick = {
+                            if (isTrackingActive) {
+                                val serviceIntent = Intent(context, HikingForegroundService::class.java).apply {
+                                    action = HikingForegroundService.ACTION_STOP
+                                }
+                                try {
+                                    context.startService(serviceIntent)
+                                } catch (e: Exception) {
+                                    RouteManager.logError("Error stopping tracking service: ${e.message}")
+                                }
+                                isTrackingActive = false
+                                viewModel.gpsStatus = "GPS Tracking Paused"
+                                showSaveGpxDialog = true
+                            } else {
+                                if (!viewModel.isCurrentPositionOnMap()) {
+                                    showOutsideMapConfirmation = true
+                                } else {
+                                    startTrackingAction()
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isTrackingActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                        ),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isTrackingActive) Icons.Default.Stop else Icons.Default.PlayArrow,
+                            contentDescription = if (isTrackingActive) "Finish Hiking" else "Start Hiking",
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(if (isTrackingActive) "Finish" else "Start", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    // Map Screen Button (Globe / Map icon)
+                    OutlinedButton(
+                        onClick = onNavigateToMap,
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Map,
+                            contentDescription = "Map Screen",
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Map", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    // Settings Button (Gear icon)
+                    IconButton(
+                        onClick = { viewModel.showSettings = !viewModel.showSettings },
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Settings",
+                            tint = if (viewModel.showSettings) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
         },
@@ -176,7 +308,7 @@ fun MainScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 // First-Run Onboarding Banner if no route is loaded
                 if (waypoints.isEmpty()) {
@@ -224,10 +356,10 @@ fun MainScreen(
                     }
                 }
 
-                // 1. Top Section: Current Leg Navigation Metrics
+                // 1. Top Section (Current Leg): Position, Bearing, Distance, Time, Target using 6-digit grid references
                 CurrentLegMetricsCard(viewModel = viewModel)
 
-                // 2. Center Section: Embedded Waypoints Table
+                // 2. Waypoint Table: Compact rows using 6-digit grid reference values, no final totals row
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -242,12 +374,12 @@ fun MainScreen(
                                 .padding(vertical = 6.dp, horizontal = 4.dp),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("Name", fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.weight(1.5f))
-                            Text("Location", fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.weight(1.8f), textAlign = TextAlign.Center)
-                            Text("Alt(m)", fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.weight(1.1f), textAlign = TextAlign.End)
-                            Text("Brg(°)", fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.weight(1.1f), textAlign = TextAlign.End)
-                            Text("Dist(m)", fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.weight(1.2f), textAlign = TextAlign.End)
-                            Text("Time(min)", fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.weight(1.3f), textAlign = TextAlign.End)
+                            Text("Name", fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.weight(1.4f))
+                            Text("Location", fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.weight(1.5f), textAlign = TextAlign.Center)
+                            Text("Alt(m)", fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.weight(0.9f), textAlign = TextAlign.End)
+                            Text("Brg(°)", fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.weight(0.9f), textAlign = TextAlign.End)
+                            Text("Dist(m)", fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.weight(1.0f), textAlign = TextAlign.End)
+                            Text("Time(m)", fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.weight(1.0f), textAlign = TextAlign.End)
                         }
 
                         HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
@@ -262,11 +394,10 @@ fun MainScreen(
                                 val isCurrent = (index == currentIndex)
                                 val metric = if (index < legMetrics.size) legMetrics[index] else null
                                 val locStr = if (viewModel.coordinateSystem == "grid") {
-                                    val east = wp.x % 100000.0
-                                    val north = wp.y % 100000.0
-                                    String.format(Locale.US, "V%.0f %.0f", east, north)
+                                    formatSuccinctGrid(wp.x, wp.y)
                                 } else {
-                                    String.format(Locale.US, "%.3f, %.3f", wp.x, wp.y)
+                                    val (lat, lon) = CoordinateUtils.metricToLatLon(wp.x, wp.y)
+                                    String.format(Locale.US, "%.2f, %.2f", lat, lon)
                                 }
 
                                 val altStr = String.format(Locale.US, "%.0f", wp.altitude)
@@ -285,16 +416,16 @@ fun MainScreen(
                                             }
                                         )
                                         .clickable { viewModel.setCurrentWaypointIndex(index) }
-                                        .padding(vertical = 8.dp, horizontal = 4.dp),
+                                        .padding(vertical = 6.dp, horizontal = 4.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
                                         text = wp.name,
                                         fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
-                                        fontSize = 12.sp,
+                                        fontSize = 11.sp,
                                         maxLines = 1,
-                                        modifier = Modifier.weight(1.5f),
+                                        modifier = Modifier.weight(1.4f),
                                         color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
@@ -302,79 +433,44 @@ fun MainScreen(
                                         fontSize = 11.sp,
                                         maxLines = 1,
                                         textAlign = TextAlign.Center,
-                                        modifier = Modifier.weight(1.8f)
+                                        modifier = Modifier.weight(1.5f)
                                     )
                                     Text(
                                         text = altStr,
-                                        fontSize = 11.sp,
+                                        fontSize = 10.sp,
                                         textAlign = TextAlign.End,
-                                        modifier = Modifier.weight(1.1f)
+                                        modifier = Modifier.weight(0.9f)
                                     )
                                     Text(
                                         text = brgStr,
-                                        fontSize = 11.sp,
+                                        fontSize = 10.sp,
                                         textAlign = TextAlign.End,
-                                        modifier = Modifier.weight(1.1f)
+                                        modifier = Modifier.weight(0.9f)
                                     )
                                     Text(
                                         text = distStr,
-                                        fontSize = 11.sp,
+                                        fontSize = 10.sp,
                                         textAlign = TextAlign.End,
-                                        modifier = Modifier.weight(1.2f)
+                                        modifier = Modifier.weight(1.0f)
                                     )
                                     Text(
                                         text = timeStr,
-                                        fontSize = 11.sp,
+                                        fontSize = 10.sp,
                                         textAlign = TextAlign.End,
-                                        modifier = Modifier.weight(1.3f)
+                                        modifier = Modifier.weight(1.0f)
                                     )
                                 }
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-                            }
-
-                            // Final row showing total distance and total time required
-                            item {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
-                                        .padding(vertical = 8.dp, horizontal = 4.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        text = "Total Route",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp,
-                                        modifier = Modifier.weight(1.5f)
-                                    )
-                                    Text(text = "-", fontSize = 11.sp, textAlign = TextAlign.Center, modifier = Modifier.weight(1.8f))
-                                    Text(text = "-", fontSize = 11.sp, textAlign = TextAlign.End, modifier = Modifier.weight(1.1f))
-                                    Text(text = "-", fontSize = 11.sp, textAlign = TextAlign.End, modifier = Modifier.weight(1.1f))
-                                    Text(
-                                        text = String.format(Locale.US, "%.0f", viewModel.totalDistance),
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp,
-                                        textAlign = TextAlign.End,
-                                        modifier = Modifier.weight(1.2f)
-                                    )
-                                    Text(
-                                        text = String.format(Locale.US, "%.1f", viewModel.totalTimeRequired),
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp,
-                                        textAlign = TextAlign.End,
-                                        modifier = Modifier.weight(1.3f)
-                                    )
-                                }
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
                             }
                         }
                     }
                 }
 
-                // 3. Bottom Section: Overall Hike Statistics
+                // 3. Overall Hike Statistics: Condensed two-line format
                 OverallHikeStatsCard(viewModel = viewModel)
             }
 
-            // Settings Overlay Panel
+            // Settings Overlay Panel (Instant persistence as soon as changed, no Apply button)
             AnimatedVisibility(
                 visible = viewModel.showSettings,
                 enter = fadeIn(),
@@ -481,7 +577,7 @@ fun MainScreen(
 
                             Spacer(modifier = Modifier.height(4.dp))
 
-                            // Route Load/Generate Buttons in Settings
+                            // Route Load / Generate Sample Buttons in Settings
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -523,21 +619,31 @@ fun CurrentLegMetricsCard(viewModel: MainViewModel) {
     val currentLeg = viewModel.currentLegMetric
     val targetWp = currentLeg?.toWaypoint
 
+    val posStr = if (viewModel.coordinateSystem == "grid") {
+        val lastBc = RouteManager.breadcrumbs.lastOrNull()
+        val x = lastBc?.x ?: RouteManager.waypoints.getOrNull(viewModel.currentIndex)?.x ?: 0.0
+        val y = lastBc?.y ?: RouteManager.waypoints.getOrNull(viewModel.currentIndex)?.y ?: 0.0
+        formatSuccinctGrid(x, y)
+    } else {
+        viewModel.currentPositionString
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Target: ${targetWp?.name ?: "Finished Route"}",
-                    style = MaterialTheme.typography.titleMedium,
+                    text = "Position: $posStr",
+                    style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
@@ -553,18 +659,9 @@ fun CurrentLegMetricsCard(viewModel: MainViewModel) {
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 MetricItem("Bearing", if (currentLeg != null && targetWp != null) "${String.format(Locale.US, "%.0f", currentLeg.bearing)}°" else "-")
-                MetricItem("Distance", if (currentLeg != null && targetWp != null) "${String.format(Locale.US, "%.0f", currentLeg.distanceMeters)} m" else "-")
-                MetricItem("Est. Time", if (currentLeg != null && targetWp != null) "${String.format(Locale.US, "%.1f", currentLeg.timeMinutes)} min" else "-")
-            }
-
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                MetricItem("Position", viewModel.currentPositionString)
-                MetricItem("Elevation", "${String.format(Locale.US, "%.0f", viewModel.currentElevation)} m")
+                MetricItem("Distance", if (currentLeg != null && targetWp != null) "${String.format(Locale.US, "%.0f", currentLeg.distanceMeters)}m" else "-")
+                MetricItem("Time", if (currentLeg != null && targetWp != null) "${String.format(Locale.US, "%.1f", currentLeg.timeMinutes)}m" else "-")
+                MetricItem("Target", targetWp?.name ?: "Finished")
             }
         }
     }
@@ -572,17 +669,20 @@ fun CurrentLegMetricsCard(viewModel: MainViewModel) {
 
 @Composable
 fun OverallHikeStatsCard(viewModel: MainViewModel) {
-    val elapsedMin = viewModel.elapsedTimeSeconds / 60.0
-    val remainingMin = viewModel.remainingTime
-    val etaMinTotal = viewModel.elapsedTimeSeconds / 60.0 + remainingMin
+    val elapsedMins = viewModel.elapsedTimeSeconds / 60.0
+    val timeStr = formatHoursMinutes(elapsedMins)
+    val distKm = viewModel.distanceTravelledSoFar / 1000.0
+    val altitudeM = viewModel.elevationClimbedSoFar
+    val totalDist = viewModel.totalDistance
+    val completionPct = if (totalDist > 0.0) (viewModel.distanceTravelledSoFar / totalDist * 100.0).coerceIn(0.0, 100.0).toInt() else 0
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Text(
                 text = "Overall Hike Statistics",
@@ -590,20 +690,14 @@ fun OverallHikeStatsCard(viewModel: MainViewModel) {
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSecondaryContainer
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                MetricItem("Distance Travelled", "${String.format(Locale.US, "%.0f", viewModel.distanceTravelledSoFar)} m")
-                MetricItem("Elevation Climbed", "${String.format(Locale.US, "%.0f", viewModel.elevationClimbedSoFar)} m")
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                MetricItem("Time Elapsed", "${elapsedMin.toInt()} min")
-                MetricItem("Remaining / ETA", "${remainingMin.toInt()} min (${etaMinTotal.toInt()}m total)")
-            }
+            // Condensed two-line format:
+            // Distance: X.Xkm Altitude: Xm Time: hh:mm % XX%
+            Text(
+                text = String.format(Locale.US, "Distance: %.1fkm  Altitude: %.0fm  Time: %s  %% %d%%", distKm, altitudeM, timeStr, completionPct),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSecondaryContainer
+            )
         }
     }
 }
@@ -612,8 +706,19 @@ fun OverallHikeStatsCard(viewModel: MainViewModel) {
 fun MetricItem(label: String, value: String) {
     Column {
         Text(text = label, fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
-        Text(text = value, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        Text(text = value, fontSize = 12.sp, fontWeight = FontWeight.Bold)
     }
+}
+
+fun formatSuccinctGrid(x: Double, y: Double): String {
+    return CoordinateUtils.formatGridReference6Digit(x, y)
+}
+
+fun formatHoursMinutes(totalMinutes: Double): String {
+    val totalMinsInt = totalMinutes.toInt()
+    val hours = totalMinsInt / 60
+    val mins = totalMinsInt % 60
+    return String.format(Locale.US, "%02d:%02d", hours, mins)
 }
 
 @Preview(showBackground = true)

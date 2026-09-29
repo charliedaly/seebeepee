@@ -27,6 +27,14 @@ class RouteAndSpatialTest {
     }
 
     @Test
+    fun testGridReferenceFormatting() {
+        val x = 86000.0
+        val y = 87000.0
+        assertEquals("860870", CoordinateUtils.formatGridReference6Digit(x, y))
+        assertEquals("V860870", CoordinateUtils.formatGridReferenceWithLetter(x, y))
+    }
+
+    @Test
     fun testLatLonMetricConversion() {
         val lat = 53.3498
         val lon = -6.2603

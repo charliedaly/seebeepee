@@ -42,6 +42,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var coneAngle by mutableFloatStateOf(prefs.coneAngle)
         private set
 
+    var showWaypointName by mutableStateOf(prefs.showWaypointName)
+        private set
+    var showWaypointAltitude by mutableStateOf(prefs.showWaypointAltitude)
+        private set
+    var showWaypointBearing by mutableStateOf(prefs.showWaypointBearing)
+        private set
+    var showWaypoints by mutableStateOf(prefs.showWaypoints)
+        private set
+    var showBreadcrumbs by mutableStateOf(prefs.showBreadcrumbs)
+        private set
+    var showGridlines by mutableStateOf(prefs.showGridlines)
+        private set
+
     var showSettings by mutableStateOf(false)
     var gpsStatus by mutableStateOf("GPS Active (Simulated)")
 
@@ -85,6 +98,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun updateConeAngle(angle: Float) {
         coneAngle = angle
         prefs.coneAngle = angle
+    }
+
+    fun updateShowWaypointName(enabled: Boolean) {
+        showWaypointName = enabled
+        prefs.showWaypointName = enabled
+    }
+
+    fun updateShowWaypointAltitude(enabled: Boolean) {
+        showWaypointAltitude = enabled
+        prefs.showWaypointAltitude = enabled
+    }
+
+    fun updateShowWaypointBearing(enabled: Boolean) {
+        showWaypointBearing = enabled
+        prefs.showWaypointBearing = enabled
+    }
+
+    fun updateShowWaypoints(enabled: Boolean) {
+        showWaypoints = enabled
+        prefs.showWaypoints = enabled
+    }
+
+    fun updateShowBreadcrumbs(enabled: Boolean) {
+        showBreadcrumbs = enabled
+        prefs.showBreadcrumbs = enabled
+    }
+
+    fun updateShowGridlines(enabled: Boolean) {
+        showGridlines = enabled
+        prefs.showGridlines = enabled
     }
 
     fun loadRoute(name: String, waypoints: List<Waypoint>) {
@@ -148,10 +191,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             return if (coordinateSystem == "grid") {
-                // Format pseudo Irish grid representation
-                val easting = x % 100000.0
-                val northing = y % 100000.0
-                String.format("V%.0f %.0f", easting, northing)
+                CoordinateUtils.formatGridReferenceWithLetter(x, y)
             } else {
                 val (lat, lon) = CoordinateUtils.metricToLatLon(x, y)
                 String.format("%.4f, %.4f", lat, lon)
@@ -211,4 +251,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return sum
         }
+
+    fun getCurrentPositionMetric(): Pair<Double, Double> {
+        val lastBc = RouteManager.breadcrumbs.lastOrNull()
+        if (lastBc != null) return Pair(lastBc.x, lastBc.y)
+        val waypoints = RouteManager.waypoints
+        val idx = currentIndex
+        if (waypoints.isNotEmpty() && idx < waypoints.size) {
+            return Pair(waypoints[idx].x, waypoints[idx].y)
+        }
+        return Pair(0.0, 0.0)
+    }
+
+    fun isCurrentPositionOnMap(): Boolean {
+        val waypoints = RouteManager.waypoints
+        if (waypoints.isEmpty()) return true
+        val (cx, cy) = getCurrentPositionMetric()
+        val minX = waypoints.minOf { it.x } - 200.0
+        val maxX = waypoints.maxOf { it.x } + 200.0
+        val minY = waypoints.minOf { it.y } - 200.0
+        val maxY = waypoints.maxOf { it.y } + 200.0
+        return cx in minX..maxX && cy in minY..maxY
+    }
 }

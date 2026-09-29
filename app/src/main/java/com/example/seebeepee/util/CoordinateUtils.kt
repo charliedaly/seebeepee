@@ -1,6 +1,7 @@
 package com.example.seebeepee.util
 
 import com.example.seebeepee.model.Breadcrumb
+import java.util.Locale
 import kotlin.math.*
 
 object CoordinateUtils {
@@ -84,5 +85,17 @@ object CoordinateUtils {
         if (timeSec <= 0.0) return 0.0
         val speedMps = distMeters / timeSec
         return speedMps * 3.6 // km/h
+    }
+
+    fun formatGridReference6Digit(x: Double, y: Double): String {
+        val east = (((x % 100000.0) + 100000.0) % 100000.0 / 100.0).toInt().coerceIn(0, 999)
+        val north = (((y % 100000.0) + 100000.0) % 100000.0 / 100.0).toInt().coerceIn(0, 999)
+        return String.format(Locale.US, "%03d%03d", east, north)
+    }
+
+    fun formatGridReferenceWithLetter(x: Double, y: Double): String {
+        val east = (((x % 100000.0) + 100000.0) % 100000.0 / 100.0).toInt().coerceIn(0, 999)
+        val north = (((y % 100000.0) + 100000.0) % 100000.0 / 100.0).toInt().coerceIn(0, 999)
+        return String.format(Locale.US, "V%03d%03d", east, north)
     }
 }

@@ -50,11 +50,6 @@ fun MapScreen(
     val waypoints = RouteManager.waypoints
     val breadcrumbs = RouteManager.breadcrumbs
 
-    // Map toggles
-    var showLabels by remember { mutableStateOf(true) }
-    var showWaypoints by remember { mutableStateOf(true) }
-    var showBreadcrumbs by remember { mutableStateOf(true) }
-    var showGridlines by remember { mutableStateOf(true) }
     var showMapSettings by remember { mutableStateOf(false) }
 
     // Pan and Zoom gesture states
@@ -69,32 +64,29 @@ fun MapScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(text = "Map Canvas: ${RouteManager.currentRouteName}") },
+                title = {
+                    val routeTitle = RouteManager.currentRouteName.substringBeforeLast(".")
+                    Text(text = if (routeTitle.isBlank()) "Map View" else routeTitle)
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
                 ),
                 actions = {
-                    IconButton(onClick = { showMapSettings = !showMapSettings }) {
-                        Icon(imageVector = Icons.Default.Settings, contentDescription = "Map Settings")
-                    }
+                    // Reset View
                     IconButton(onClick = { resetView() }) {
                         Icon(imageVector = Icons.Default.MyLocation, contentDescription = "Reset View")
                     }
+                    // Return to Navigation
+                    IconButton(onClick = onNavigateBack) {
+                        Icon(imageVector = Icons.Default.Navigation, contentDescription = "Return to Navigation")
+                    }
+                    // Map Settings
+                    IconButton(onClick = { showMapSettings = !showMapSettings }) {
+                        Icon(imageVector = Icons.Default.Settings, contentDescription = "Map Settings")
+                    }
                 }
             )
-        },
-        floatingActionButton = {
-            FloatingActionButton(
-                onClick = onNavigateBack,
-                containerColor = MaterialTheme.colorScheme.primary
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Navigation,
-                    contentDescription = "Back to Navigation",
-                    tint = MaterialTheme.colorScheme.onPrimary
-                )
-            }
         },
         modifier = modifier.fillMaxSize()
     ) { innerPadding ->
@@ -123,9 +115,10 @@ fun MapScreen(
                     val minY = waypoints.minOf { it.y }
                     val maxY = waypoints.maxOf { it.y }
 
-                    val rangeX = maxOf(2000.0, maxX - minX) // Dynamic scaling: minimum 2km range
-                    val rangeY = maxOf(2000.0, maxY - minY)
-                    val baseScale = minOf(canvasWidth / (rangeX * 1.1f), canvasHeight / (rangeY * 1.1f))
+                    val rangeX = maxOf(200.0, maxX - minX)
+                    val rangeY = maxOf(200.0, maxY - minY)
+                    // Added buffer area around map canvas (1.35f scale factor)
+                    val baseScale = minOf(canvasWidth / (rangeX * 1.35f), canvasHeight / (rangeY * 1.35f))
                     val scale = baseScale * zoom
 
                     val centerX = (minX + maxX) / 2.0
@@ -133,17 +126,23 @@ fun MapScreen(
 
                     fun project(x: Double, y: Double): Offset {
                         val px = (canvasWidth / 2f) + pan.x + ((x - centerX) * scale).toFloat()
-                        val py = (canvasHeight / 2f) + pan.y - ((y - centerY) * scale).toFloat() // inverted Y for canvas
+                        val py = (canvasHeight / 2f) + pan.y - ((y - centerY) * scale).toFloat()
                         return Offset(px, py)
                     }
 
-                    // 1. Draw 1km Coordinate Gridlines
-                    if (showGridlines) {
+                    // 1. Draw 1km Coordinate Gridlines & Two-Digit Grid Markings (no N, E, or trailing zeros)
+                    if (viewModel.showGridlines) {
                         val gridSpacingMeters = 1000.0
                         val startGridX = (minX / gridSpacingMeters).toInt() * gridSpacingMeters - gridSpacingMeters
                         val endGridX = (maxX / gridSpacingMeters).toInt() * gridSpacingMeters + gridSpacingMeters
                         val startGridY = (minY / gridSpacingMeters).toInt() * gridSpacingMeters - gridSpacingMeters
                         val endGridY = (maxY / gridSpacingMeters).toInt() * gridSpacingMeters + gridSpacingMeters
+
+                        val gridTextPaint = Paint().apply {
+                            color = android.graphics.Color.GRAY
+                            textSize = 26f
+                            isAntiAlias = true
+                        }
 
                         var gx = startGridX
                         while (gx <= endGridX) {
@@ -154,17 +153,14 @@ fun MapScreen(
                                 end = Offset(p1.x, canvasHeight),
                                 strokeWidth = 1f
                             )
-                            if (showLabels) {
-                                drawContext.canvas.nativeCanvas.drawText(
-                                    "E: ${gx.toInt()}",
-                                    p1.x + 4f,
-                                    24f,
-                                    Paint().apply {
-                                        color = android.graphics.Color.GRAY
-                                        textSize = 28f
-                                    }
-                                )
-                            }
+                            val gridNum = ((gx % 100000.0) / 1000.0).toInt() % 100
+                            val labelText = String.format(Locale.US, "%02d", gridNum)
+                            drawContext.canvas.nativeCanvas.drawText(
+                                labelText,
+                                p1.x + 4f,
+                                28f,
+                                gridTextPaint
+                            )
                             gx += gridSpacingMeters
                         }
 
@@ -177,35 +173,79 @@ fun MapScreen(
                                 end = Offset(canvasWidth, p1.y),
                                 strokeWidth = 1f
                             )
-                            if (showLabels) {
-                                drawContext.canvas.nativeCanvas.drawText(
-                                    "N: ${gy.toInt()}",
-                                    8f,
-                                    p1.y - 6f,
-                                    Paint().apply {
-                                        color = android.graphics.Color.GRAY
-                                        textSize = 28f
-                                    }
-                                )
-                            }
+                            val gridNum = ((gy % 100000.0) / 1000.0).toInt() % 100
+                            val labelText = String.format(Locale.US, "%02d", gridNum)
+                            drawContext.canvas.nativeCanvas.drawText(
+                                labelText,
+                                8f,
+                                p1.y - 6f,
+                                gridTextPaint
+                            )
                             gy += gridSpacingMeters
                         }
                     }
 
-                    // 2. Draw Active Leg / Route Segments
+                    // 2. Draw Active Leg / Route Segments & Bearing Option
                     for (i in 0 until waypoints.size - 1) {
-                        val p1 = project(waypoints[i].x, waypoints[i].y)
-                        val p2 = project(waypoints[i + 1].x, waypoints[i + 1].y)
+                        val wp1 = waypoints[i]
+                        val wp2 = waypoints[i + 1]
+                        val p1 = project(wp1.x, wp1.y)
+                        val p2 = project(wp2.x, wp2.y)
                         drawLine(
-                            color = Color(0xFF1976D2), // Material Blue
+                            color = Color(0xFF1976D2),
                             start = p1,
                             end = p2,
                             strokeWidth = 5f
                         )
+
+                        // When Bearing is selected, bearing appears parallel to the waypoint leg close to the originating waypoint
+                        if (viewModel.showWaypointBearing) {
+                            val bearing = CoordinateUtils.calculateBearing(wp1.x, wp1.y, wp2.x, wp2.y)
+                            val bearingText = "${bearing.toInt()}°"
+                            val dx = p2.x - p1.x
+                            val dy = p2.y - p1.y
+                            val len = sqrt(dx * dx + dy * dy)
+                            if (len >= 55f) {
+                                val ux = dx / len
+                                val uy = dy / len
+                                val perpX = -uy
+                                val perpY = ux
+
+                                val distAlongSegment = maxOf(22f, len * 0.15f)
+                                val perpOffset = 16f
+
+                                val textX = p1.x + ux * distAlongSegment + perpX * perpOffset
+                                val textY = p1.y + uy * distAlongSegment + perpY * perpOffset
+
+                                var angleDeg = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat()
+                                if (angleDeg > 90f) {
+                                    angleDeg -= 180f
+                                } else if (angleDeg < -90f) {
+                                    angleDeg += 180f
+                                }
+
+                                val nativeCanvas = drawContext.canvas.nativeCanvas
+                                nativeCanvas.save()
+                                nativeCanvas.translate(textX, textY)
+                                nativeCanvas.rotate(angleDeg)
+
+                                val bearingPaint = Paint().apply {
+                                    color = android.graphics.Color.BLUE
+                                    textSize = 24f
+                                    isAntiAlias = true
+                                    typeface = Typeface.DEFAULT
+                                    textAlign = Paint.Align.CENTER
+                                }
+                                val fontMetrics = bearingPaint.fontMetrics
+                                val baselineOffset = - (fontMetrics.ascent + fontMetrics.descent) / 2f
+                                nativeCanvas.drawText(bearingText, 0f, baselineOffset, bearingPaint)
+                                nativeCanvas.restore()
+                            }
+                        }
                     }
 
                     // 3. Speed-Graded Breadcrumbs Trail
-                    if (showBreadcrumbs && breadcrumbs.isNotEmpty()) {
+                    if (viewModel.showBreadcrumbs && breadcrumbs.isNotEmpty()) {
                         for (i in breadcrumbs.indices) {
                             val bc = breadcrumbs[i]
                             val p = project(bc.x, bc.y)
@@ -219,11 +259,14 @@ fun MapScreen(
                         }
                     }
 
-                    // 4. Draw Waypoints & Intelligent Constraint-Based Label Placement
-                    if (showWaypoints) {
-                        dataIndexAndCrowding(waypoints).forEach { (idx, wp, _) ->
+                    // 4. Waypoint Label Deduplication & Drawing
+                    if (viewModel.showWaypoints) {
+                        val groupedWps = waypoints.groupBy { Pair(round(it.x * 10) / 10, round(it.y * 10) / 10) }
+
+                        groupedWps.values.forEach { group ->
+                            val wp = group.first()
                             val p = project(wp.x, wp.y)
-                            val isCurrent = (idx == viewModel.currentIndex)
+                            val isCurrent = group.any { waypoints.indexOf(it) == viewModel.currentIndex }
                             val radius = if (isCurrent) 14f else 8f
 
                             drawCircle(
@@ -238,82 +281,112 @@ fun MapScreen(
                             )
                         }
 
-                        if (showLabels) {
+                        if (viewModel.showWaypointName || viewModel.showWaypointAltitude) {
                             val placedLabels = mutableListOf<PlacedLabel>()
-                            val sortedWps = dataIndexAndCrowding(waypoints)
-
                             val textPaint = Paint().apply {
                                 color = android.graphics.Color.BLACK
-                                textSize = 32f
+                                textSize = 30f
                                 isAntiAlias = true
                                 typeface = Typeface.DEFAULT_BOLD
                             }
 
-                            for ((_, wp, _) in sortedWps) {
+                            groupedWps.values.forEach { group ->
+                                val wp = group.first()
                                 val p = project(wp.x, wp.y)
-                                val labelText = "${wp.name} (${wp.altitude.toInt()}m)"
-                                val textWidth = textPaint.measureText(labelText)
-                                val textHeight = 36f
 
-                                val candidates = listOf(
-                                    Rect(p.x + 16f, p.y - textHeight / 2f, p.x + 16f + textWidth, p.y + textHeight / 2f),
-                                    Rect(p.x - 16f - textWidth, p.y - textHeight / 2f, p.x - 16f, p.y + textHeight / 2f),
-                                    Rect(p.x - textWidth / 2f, p.y - 24f - textHeight, p.x + textWidth / 2f, p.y - 24f),
-                                    Rect(p.x - textWidth / 2f, p.y + 24f, p.x + textWidth / 2f, p.y + 24f + textHeight)
-                                )
+                                val parts = mutableListOf<String>()
+                                if (viewModel.showWaypointName) {
+                                    val names = group.map { it.name }.distinct().joinToString(" / ")
+                                    parts.add(names)
+                                }
+                                val showAlt = viewModel.showWaypointAltitude
+                                if (showAlt) {
+                                    parts.add("${wp.altitude.toInt()}m")
+                                }
+                                val labelText = parts.joinToString(" ")
 
-                                var bestRect = candidates[0]
-                                var minOverlap = Int.MAX_VALUE
+                                if (labelText.isNotBlank()) {
+                                    val textWidth = textPaint.measureText(labelText)
+                                    val textHeight = 34f
 
-                                for (cand in candidates) {
-                                    var overlapCount = 0
-                                    for (placed in placedLabels) {
-                                        if (cand.overlaps(placed.rect)) {
-                                            overlapCount++
+                                    val candidates = listOf(
+                                        Rect(p.x + 16f, p.y - textHeight / 2f, p.x + 16f + textWidth, p.y + textHeight / 2f),
+                                        Rect(p.x - 16f - textWidth, p.y - textHeight / 2f, p.x - 16f, p.y + textHeight / 2f),
+                                        Rect(p.x - textWidth / 2f, p.y - 24f - textHeight, p.x + textWidth / 2f, p.y - 24f),
+                                        Rect(p.x - textWidth / 2f, p.y + 24f, p.x + textWidth / 2f, p.y + 24f + textHeight)
+                                    )
+
+                                    var bestRect = candidates[0]
+                                    var minOverlap = Int.MAX_VALUE
+
+                                    for (cand in candidates) {
+                                        var overlapCount = 0
+                                        for (placed in placedLabels) {
+                                            if (cand.overlaps(placed.rect)) {
+                                                overlapCount++
+                                            }
+                                        }
+                                        if (overlapCount < minOverlap) {
+                                            minOverlap = overlapCount
+                                            bestRect = cand
+                                            if (overlapCount == 0) break
                                         }
                                     }
-                                    if (overlapCount < minOverlap) {
-                                        minOverlap = overlapCount
-                                        bestRect = cand
-                                        if (overlapCount == 0) break
-                                    }
+
+                                    placedLabels.add(PlacedLabel(bestRect, labelText, p))
+
+                                    drawRect(
+                                        color = Color.White.copy(alpha = 0.85f),
+                                        topLeft = Offset(bestRect.left - 4f, bestRect.top - 2f),
+                                        size = Size(bestRect.width + 8f, bestRect.height + 4f)
+                                    )
+
+                                    drawContext.canvas.nativeCanvas.drawText(
+                                        labelText,
+                                        bestRect.left,
+                                        bestRect.bottom - 4f,
+                                        textPaint
+                                    )
                                 }
-
-                                placedLabels.add(PlacedLabel(bestRect, labelText, p))
-
-                                drawRect(
-                                    color = Color.White.copy(alpha = 0.85f),
-                                    topLeft = Offset(bestRect.left - 4f, bestRect.top - 2f),
-                                    size = Size(bestRect.width + 8f, bestRect.height + 4f)
-                                )
-
-                                drawContext.canvas.nativeCanvas.drawText(
-                                    labelText,
-                                    bestRect.left,
-                                    bestRect.bottom - 6f,
-                                    textPaint
-                                )
                             }
                         }
+                    }
+
+                    // 5. Out-of-Bounds Indicator
+                    val currentPos = viewModel.getCurrentPositionMetric()
+                    val posScreen = project(currentPos.first, currentPos.second)
+                    if (posScreen.x < 0f || posScreen.x > canvasWidth || posScreen.y < 0f || posScreen.y > canvasHeight) {
+                        val currWp = waypoints[viewModel.currentIndex]
+                        val dist = CoordinateUtils.calculateDistance(currWp.x, currWp.y, currentPos.first, currentPos.second)
+                        val distStr = if (dist < 1000.0) "${dist.toInt()}m" else String.format(Locale.US, "%.1fkm", dist / 1000.0)
+
+                        val clampedX = posScreen.x.coerceIn(50f, canvasWidth - 50f)
+                        val clampedY = posScreen.y.coerceIn(50f, canvasHeight - 50f)
+
+                        val indicatorPaint = Paint().apply {
+                            color = android.graphics.Color.RED
+                            textSize = 32f
+                            isAntiAlias = true
+                            typeface = Typeface.DEFAULT_BOLD
+                        }
+
+                        drawCircle(
+                            color = Color.Red,
+                            radius = 24f,
+                            center = Offset(clampedX, clampedY)
+                        )
+
+                        drawContext.canvas.nativeCanvas.drawText(
+                            "➔ $distStr",
+                            clampedX + 30f,
+                            clampedY + 10f,
+                            indicatorPaint
+                        )
                     }
                 }
             }
 
-            // Info & Toggles Overlay Card
-            Card(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(12.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))
-            ) {
-                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(text = "Waypoints: ${waypoints.size}", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    Text(text = "Breadcrumbs: ${breadcrumbs.size}", fontSize = 12.sp)
-                    Text(text = "Zoom: ${String.format(Locale.US, "%.1f", zoom)}x", fontSize = 12.sp)
-                }
-            }
-
-            // Map Settings Dialog / Panel
+            // Map Settings Dialog (Instant persistence as soon as changed, no Apply button)
             AnimatedVisibility(
                 visible = showMapSettings,
                 enter = fadeIn(),
@@ -349,8 +422,35 @@ fun MapScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("Show Waypoint Labels", fontSize = 13.sp)
-                                Switch(checked = showLabels, onCheckedChange = { showLabels = it })
+                                Text("Waypoint Name", fontSize = 13.sp)
+                                Switch(
+                                    checked = viewModel.showWaypointName,
+                                    onCheckedChange = { viewModel.updateShowWaypointName(it) }
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Waypoint Altitude", fontSize = 13.sp)
+                                Switch(
+                                    checked = viewModel.showWaypointAltitude,
+                                    onCheckedChange = { viewModel.updateShowWaypointAltitude(it) }
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Waypoint Bearing", fontSize = 13.sp)
+                                Switch(
+                                    checked = viewModel.showWaypointBearing,
+                                    onCheckedChange = { viewModel.updateShowWaypointBearing(it) }
+                                )
                             }
 
                             Row(
@@ -359,7 +459,10 @@ fun MapScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text("Show Waypoint Markers", fontSize = 13.sp)
-                                Switch(checked = showWaypoints, onCheckedChange = { showWaypoints = it })
+                                Switch(
+                                    checked = viewModel.showWaypoints,
+                                    onCheckedChange = { viewModel.updateShowWaypoints(it) }
+                                )
                             }
 
                             Row(
@@ -368,7 +471,10 @@ fun MapScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text("Show Speed Breadcrumbs", fontSize = 13.sp)
-                                Switch(checked = showBreadcrumbs, onCheckedChange = { showBreadcrumbs = it })
+                                Switch(
+                                    checked = viewModel.showBreadcrumbs,
+                                    onCheckedChange = { viewModel.updateShowBreadcrumbs(it) }
+                                )
                             }
 
                             Row(
@@ -377,14 +483,17 @@ fun MapScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text("Show 1km Gridlines", fontSize = 13.sp)
-                                Switch(checked = showGridlines, onCheckedChange = { showGridlines = it })
+                                Switch(
+                                    checked = viewModel.showGridlines,
+                                    onCheckedChange = { viewModel.updateShowGridlines(it) }
+                                )
                             }
 
                             Button(
                                 onClick = { showMapSettings = false },
                                 modifier = Modifier.align(Alignment.End)
                             ) {
-                                Text("Apply")
+                                Text("Close")
                             }
                         }
                     }
@@ -392,24 +501,6 @@ fun MapScreen(
             }
         }
     }
-}
-
-private data class WaypointCrowding(val index: Int, val waypoint: Waypoint, val crowdingScore: Double)
-
-private fun dataIndexAndCrowding(waypoints: List<Waypoint>): List<WaypointCrowding> {
-    val list = mutableListOf<WaypointCrowding>()
-    for (i in waypoints.indices) {
-        val wp = waypoints[i]
-        var totalDist = 0.0
-        for (j in waypoints.indices) {
-            if (i != j) {
-                totalDist += CoordinateUtils.calculateDistance(wp.x, wp.y, waypoints[j].x, waypoints[j].y)
-            }
-        }
-        val crowding = if (waypoints.size > 1) totalDist / (waypoints.size - 1) else 0.0
-        list.add(WaypointCrowding(i, wp, crowding))
-    }
-    return list.sortedBy { it.crowdingScore }
 }
 
 private fun speedToColor(speedKmh: Double): Color {

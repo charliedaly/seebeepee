@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -53,6 +54,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var showBreadcrumbs by mutableStateOf(prefs.showBreadcrumbs)
         private set
     var showGridlines by mutableStateOf(prefs.showGridlines)
+        private set
+    var useFullGridReference by mutableStateOf(prefs.useFullGridReference)
+        private set
+    var gridReferencePrecision by mutableIntStateOf(prefs.gridReferencePrecision)
         private set
 
     var showSettings by mutableStateOf(false)
@@ -130,6 +135,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         prefs.showGridlines = enabled
     }
 
+    fun updateUseFullGridReference(enabled: Boolean) {
+        useFullGridReference = enabled
+        prefs.useFullGridReference = enabled
+    }
+
+    fun updateGridReferencePrecision(precision: Int) {
+        gridReferencePrecision = precision
+        prefs.gridReferencePrecision = precision
+    }
+
     fun loadRoute(name: String, waypoints: List<Waypoint>) {
         RouteManager.loadWaypoints(name, waypoints)
         elapsedTimeSeconds = 0L
@@ -191,7 +206,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             return if (coordinateSystem == "grid") {
-                CoordinateUtils.formatGridReferenceWithLetter(x, y)
+                CoordinateUtils.formatGridReferenceWithLetter(x, y, gridReferencePrecision)
             } else {
                 val (lat, lon) = CoordinateUtils.metricToLatLon(x, y)
                 String.format("%.4f, %.4f", lat, lon)

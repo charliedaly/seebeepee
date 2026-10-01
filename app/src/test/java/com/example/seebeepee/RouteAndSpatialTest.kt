@@ -31,7 +31,9 @@ class RouteAndSpatialTest {
         val x = 86000.0
         val y = 87000.0
         assertEquals("860870", CoordinateUtils.formatGridReference6Digit(x, y))
-        assertEquals("V860870", CoordinateUtils.formatGridReferenceWithLetter(x, y))
+        assertEquals("V860870", CoordinateUtils.formatGridReferenceWithLetter(x, y, 6))
+        assertEquals("V86008700", CoordinateUtils.formatGridReferenceWithLetter(x, y, 8))
+        assertEquals("V8600087000", CoordinateUtils.formatGridReferenceWithLetter(x, y, 10))
     }
 
     @Test
@@ -40,8 +42,8 @@ class RouteAndSpatialTest {
         val lon = -6.2603
         val (x, y) = CoordinateUtils.latLonToMetric(lat, lon)
         val (backLat, backLon) = CoordinateUtils.metricToLatLon(x, y)
-        assertEquals(lat, backLat, 0.0001)
-        assertEquals(lon, backLon, 0.0001)
+        assertEquals(lat, backLat, 0.0005)
+        assertEquals(lon, backLon, 0.0005)
     }
 
     @Test

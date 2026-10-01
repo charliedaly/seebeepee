@@ -6,15 +6,24 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.location.LocationManager
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.os.Build
 import android.os.IBinder
+import android.os.Looper
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
+import android.view.KeyEvent
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
+import androidx.media.session.MediaButtonReceiver
+import com.google.android.gms.location.*
 import com.example.seebeepee.MainActivity
 import com.example.seebeepee.R
 import com.example.seebeepee.model.Breadcrumb
@@ -26,10 +35,13 @@ import kotlinx.coroutines.*
 
 class HikingForegroundService : Service() {
     private val serviceJob = SupervisorJob()
-    private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
     private lateinit var ttsManager: TtsManager
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
+    private lateinit var locationCallback: LocationCallback
     private var mediaSession: MediaSessionCompat? = null
+    private var mediaButtonPendingIntent: PendingIntent? = null
     private var isRunning = false
+    private var audioFocusRequest: AudioFocusRequest? = null
 
     companion object {
         const val CHANNEL_ID = "HikingServiceChannel"
@@ -40,37 +52,134 @@ class HikingForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         ttsManager = TtsManager(applicationContext)
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        requestAudioFocus()
         setupMediaSession()
         createNotificationChannel()
+        setupLocationCallback()
+    }
+
+    private fun requestAudioFocus(): Boolean {
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
+            val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                .setAudioAttributes(audioAttributes)
+                .setAcceptsDelayedFocusGain(true)
+                .setOnAudioFocusChangeListener { _ -> }
+                .build()
+            audioFocusRequest = focusRequest
+            audioManager.requestAudioFocus(focusRequest) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        } else {
+            @Suppress("DEPRECATION")
+            val result = audioManager.requestAudioFocus(
+                { _ -> },
+                AudioManager.STREAM_MUSIC,
+                AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+            )
+            result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        }
+    }
+
+    private fun abandonAudioFocus() {
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.abandonAudioFocus(null)
+        }
+    }
+
+    private fun setupLocationCallback() {
+        locationCallback = object : LocationCallback() {
+            override fun onLocationResult(locationResult: LocationResult) {
+                for (location in locationResult.locations) {
+                    val (x, y) = CoordinateUtils.latLonToMetric(location.latitude, location.longitude)
+                    val alt = if (location.hasAltitude()) location.altitude else 0.0
+                    val timestamp = location.time.takeIf { it > 0 } ?: System.currentTimeMillis()
+
+                    val breadcrumb = Breadcrumb(x, y, alt, timestamp)
+                    RouteManager.addBreadcrumb(breadcrumb)
+                }
+            }
+        }
     }
 
     private fun setupMediaSession() {
+        val pendingIntent = MediaButtonReceiver.buildMediaButtonPendingIntent(
+            this@HikingForegroundService,
+            PlaybackStateCompat.ACTION_PLAY_PAUSE
+        )
+        mediaButtonPendingIntent = pendingIntent
+
         mediaSession = MediaSessionCompat(this, "SeeBeePeeMediaSession").apply {
+            setFlags(
+                MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or
+                        MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
+            )
+            setMediaButtonReceiver(pendingIntent)
             setCallback(object : MediaSessionCompat.Callback() {
                 override fun onPlay() {
                     super.onPlay()
+                    requestAudioFocus()
                     speakCurrentLegStats()
                 }
                 override fun onPause() {
                     super.onPause()
+                    requestAudioFocus()
                     ttsManager.speak("Hike tracking paused.")
                 }
                 override fun onSkipToNext() {
                     super.onSkipToNext()
+                    requestAudioFocus()
                     if (RouteManager.waypoints.isNotEmpty()) {
                         RouteManager.currentWaypointIndex = (RouteManager.currentWaypointIndex + 1) % RouteManager.waypoints.size
                         speakCurrentLegStats()
                     }
                 }
+                override fun onMediaButtonEvent(mediaButtonEvent: Intent): Boolean {
+                    val keyEvent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        mediaButtonEvent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        mediaButtonEvent.getParcelableExtra(Intent.EXTRA_KEY_EVENT) as? KeyEvent
+                    }
+                    if (keyEvent != null && keyEvent.action == KeyEvent.ACTION_DOWN) {
+                        requestAudioFocus()
+                        when (keyEvent.keyCode) {
+                            KeyEvent.KEYCODE_MEDIA_PLAY,
+                            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                            KeyEvent.KEYCODE_HEADSETHOOK -> {
+                                speakCurrentLegStats()
+                                return true
+                            }
+                            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                                ttsManager.speak("Hike tracking paused.")
+                                return true
+                            }
+                            KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                                if (RouteManager.waypoints.isNotEmpty()) {
+                                    RouteManager.currentWaypointIndex = (RouteManager.currentWaypointIndex + 1) % RouteManager.waypoints.size
+                                    speakCurrentLegStats()
+                                }
+                                return true
+                            }
+                        }
+                    }
+                    return super.onMediaButtonEvent(mediaButtonEvent)
+                }
             })
             setPlaybackState(
                 PlaybackStateCompat.Builder()
-                    .setState(PlaybackStateCompat.STATE_PLAYING, 0L, 1f)
+                    .setState(PlaybackStateCompat.STATE_PLAYING, 0L, 1.0f)
                     .setActions(
-                        PlaybackStateCompat.ACTION_PLAY or
-                                PlaybackStateCompat.ACTION_PAUSE or
-                                PlaybackStateCompat.ACTION_PLAY_PAUSE or
-                                PlaybackStateCompat.ACTION_SKIP_TO_NEXT
+                        PlaybackStateCompat.ACTION_PLAY_PAUSE or
+                                PlaybackStateCompat.ACTION_PLAY or
+                                PlaybackStateCompat.ACTION_PLAY_PAUSE
                     )
                     .build()
             )
@@ -79,19 +188,21 @@ class HikingForegroundService : Service() {
     }
 
     private fun speakCurrentLegStats() {
+        requestAudioFocus()
         val waypoints = RouteManager.waypoints
         val idx = RouteManager.currentWaypointIndex
+        val precision = AppPreferences(applicationContext).gridReferencePrecision
         if (waypoints.isNotEmpty() && idx < waypoints.size) {
             val current = waypoints[idx]
             val next = if (idx < waypoints.size - 1) waypoints[idx + 1] else null
             if (next != null) {
                 val dist = CoordinateUtils.calculateDistance(current.x, current.y, next.x, next.y)
                 val bearing = CoordinateUtils.calculateBearing(current.x, current.y, next.x, next.y)
-                val gridRef = CoordinateUtils.formatGridReferenceWithLetter(next.x, next.y)
+                val gridRef = CoordinateUtils.formatGridReferenceWithLetter(next.x, next.y, precision)
                 val text = "Leg to ${next.name}, grid reference $gridRef. Bearing ${bearing.toInt()} degrees. Distance ${dist.toInt()} meters."
                 ttsManager.speak(text)
             } else {
-                val gridRef = CoordinateUtils.formatGridReferenceWithLetter(current.x, current.y)
+                val gridRef = CoordinateUtils.formatGridReferenceWithLetter(current.x, current.y, precision)
                 ttsManager.speak("Currently at final waypoint ${current.name}, grid reference $gridRef.")
             }
         } else {
@@ -100,8 +211,17 @@ class HikingForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        requestAudioFocus()
+        mediaSession?.setActive(true)
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        if (intent?.action != ACTION_STOP) {
+            mediaButtonPendingIntent?.let {
+                audioManager.registerMediaButtonEventReceiver(it)
+            }
+        }
         when (intent?.action) {
             ACTION_STOP -> {
+                stopLocationUpdates()
                 try {
                     stopForeground(STOP_FOREGROUND_REMOVE)
                 } catch (e: Exception) {
@@ -111,49 +231,58 @@ class HikingForegroundService : Service() {
                 return START_NOT_STICKY
             }
             else -> {
-                try {
-                    val hasFine = ActivityCompat.checkSelfPermission(
-                        this,
-                        Manifest.permission.ACCESS_FINE_LOCATION
-                    ) == PackageManager.PERMISSION_GRANTED
-                    val hasCoarse = ActivityCompat.checkSelfPermission(
-                        this,
-                        Manifest.permission.ACCESS_COARSE_LOCATION
-                    ) == PackageManager.PERMISSION_GRANTED
+                val hasFine = ActivityCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.ACCESS_FINE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+                val hasCoarse = ActivityCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
 
-                    if (!hasFine && !hasCoarse) {
-                        RouteManager.logError("SecurityException prevented: Location permissions (Fine/Coarse) are missing when starting HikingForegroundService.")
-                    }
+                val locationManager = getSystemService(LOCATION_SERVICE) as? LocationManager
+                val isGpsOn = locationManager?.let {
+                    it.isProviderEnabled(LocationManager.GPS_PROVIDER) || it.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+                } ?: false
 
-                    val notification = createNotification("Hike Tracking Active")
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        try {
-                            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
-                        } catch (e: SecurityException) {
-                            RouteManager.logError("SecurityException starting foreground service with location type: ${e.message}. Falling back to standard startForeground.")
-                            startForeground(NOTIFICATION_ID, notification)
-                        }
-                    } else {
-                        startForeground(NOTIFICATION_ID, notification)
-                    }
-                    startSimulationOrGpsTracking()
-                } catch (e: SecurityException) {
-                    RouteManager.logError("SecurityException in HikingForegroundService onStartCommand: ${e.message}")
-                    try {
-                        val notification = createNotification("Hike Tracking Active (Fallback)")
-                        startForeground(NOTIFICATION_ID, notification)
-                        startSimulationOrGpsTracking()
-                    } catch (e2: Exception) {
-                        RouteManager.logError("Failed to start foreground service fallback: ${e2.message}")
-                        stopSelf()
-                    }
-                } catch (e: Exception) {
-                    RouteManager.logError("Error starting HikingForegroundService: ${e.message}")
-                    stopSelf()
+                if (!hasFine && !hasCoarse) {
+                    RouteManager.logError("Error: Location permissions (Fine/Coarse) are missing when starting HikingForegroundService.")
+                    val notification = createNotification("⚠️ Error: Location Permission Missing!")
+                    startForegroundWithNotification(notification)
+                    return START_STICKY
                 }
+
+                if (!isGpsOn) {
+                    RouteManager.logError("Warning: GPS/Location provider is disabled.")
+                    val notification = createNotification("⚠️ Warning: GPS Disabled in Settings!")
+                    startForegroundWithNotification(notification)
+                } else {
+                    val notification = createNotification("Hike Tracking Active (GPS)")
+                    startForegroundWithNotification(notification)
+                }
+
+                startGpsTracking()
             }
         }
         return START_STICKY
+    }
+
+    private fun startForegroundWithNotification(notification: Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                } else {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                }
+                startForeground(NOTIFICATION_ID, notification, serviceType)
+            } catch (e: SecurityException) {
+                RouteManager.logError("SecurityException starting foreground service with location/mediaPlayback type: ${e.message}")
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
     }
 
     private fun createNotificationChannel() {
@@ -184,35 +313,51 @@ class HikingForegroundService : Service() {
             .build()
     }
 
-    private fun startSimulationOrGpsTracking() {
+    private fun startGpsTracking() {
         if (isRunning) return
         isRunning = true
 
-        serviceScope.launch {
-            var simStep = 0
-            while (isRunning) {
-                delay(4000L)
-                val waypoints = RouteManager.waypoints
-                if (waypoints.isNotEmpty()) {
-                    val idx = RouteManager.currentWaypointIndex.coerceIn(0, waypoints.size - 1)
-                    val currentWp = waypoints[idx]
-                    val offsetX = currentWp.x + (Math.random() - 0.5) * 20.0
-                    val offsetY = currentWp.y + (Math.random() - 0.5) * 20.0
-                    val alt = currentWp.altitude + (Math.random() - 0.5) * 5.0
+        val hasFine = ActivityCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val hasCoarse = ActivityCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
 
-                    val breadcrumb = Breadcrumb(offsetX, offsetY, alt, System.currentTimeMillis())
-                    val lastBc = RouteManager.breadcrumbs.lastOrNull()
-                    RouteManager.addBreadcrumb(breadcrumb)
+        if (!hasFine && !hasCoarse) {
+            RouteManager.logError("Cannot start GPS tracking: Location permission missing.")
+            isRunning = false
+            return
+        }
 
-                    if (lastBc != null) {
-                        val prefs = AppPreferences(applicationContext)
-                        if (prefs.voiceAlertsEnabled && simStep % 6 == 0) {
-                            speakCurrentLegStats()
-                        }
-                    }
-                    simStep++
-                }
-            }
+        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L).apply {
+            setMinUpdateIntervalMillis(1000L)
+            setMaxUpdateDelayMillis(2000L)
+        }.build()
+
+        try {
+            fusedLocationClient.requestLocationUpdates(
+                locationRequest,
+                locationCallback,
+                Looper.getMainLooper()
+            )
+            RouteManager.logError("High-accuracy GPS tracking requested (1000ms interval).")
+        } catch (e: SecurityException) {
+            RouteManager.logError("SecurityException starting GPS location updates: ${e.message}")
+            isRunning = false
+        } catch (e: Exception) {
+            RouteManager.logError("Error starting GPS location updates: ${e.message}")
+            isRunning = false
+        }
+    }
+
+    private fun stopLocationUpdates() {
+        try {
+            fusedLocationClient.removeLocationUpdates(locationCallback)
+        } catch (e: Exception) {
+            RouteManager.logError("Error removing location updates: ${e.message}")
         }
     }
 
@@ -221,7 +366,13 @@ class HikingForegroundService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
+        stopLocationUpdates()
         serviceJob.cancel()
+        abandonAudioFocus()
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        mediaButtonPendingIntent?.let {
+            audioManager.unregisterMediaButtonEventReceiver(it)
+        }
         mediaSession?.release()
         ttsManager.shutdown()
     }

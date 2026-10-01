@@ -360,26 +360,41 @@ fun MapScreen(
                         val dist = CoordinateUtils.calculateDistance(currWp.x, currWp.y, currentPos.first, currentPos.second)
                         val distStr = if (dist < 1000.0) "${dist.toInt()}m" else String.format(Locale.US, "%.1fkm", dist / 1000.0)
 
-                        val clampedX = posScreen.x.coerceIn(50f, canvasWidth - 50f)
-                        val clampedY = posScreen.y.coerceIn(50f, canvasHeight - 50f)
+                        val padding = 40f
+                        val clampedX = posScreen.x.coerceIn(padding, canvasWidth - padding)
+                        val clampedY = posScreen.y.coerceIn(padding, canvasHeight - padding)
 
                         val indicatorPaint = Paint().apply {
                             color = android.graphics.Color.RED
-                            textSize = 32f
+                            textSize = 30f
                             isAntiAlias = true
                             typeface = Typeface.DEFAULT_BOLD
                         }
 
                         drawCircle(
                             color = Color.Red,
-                            radius = 24f,
+                            radius = 20f,
                             center = Offset(clampedX, clampedY)
                         )
 
+                        val labelText = "➔ $distStr"
+                        val textWidth = indicatorPaint.measureText(labelText)
+
+                        val textX = if (clampedX >= canvasWidth - padding - 10f) {
+                            clampedX - textWidth - 25f
+                        } else {
+                            clampedX + 25f
+                        }
+                        val textY = if (clampedY >= canvasHeight - padding - 10f) {
+                            clampedY - 10f
+                        } else {
+                            clampedY + 10f
+                        }
+
                         drawContext.canvas.nativeCanvas.drawText(
-                            "➔ $distStr",
-                            clampedX + 30f,
-                            clampedY + 10f,
+                            labelText,
+                            textX,
+                            textY,
                             indicatorPaint
                         )
                     }

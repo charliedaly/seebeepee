@@ -1,10 +1,8 @@
-package com.example.seebeepee.util
+package com.example.coordinatesystemtest.utils
 
 import android.content.Context
 import android.util.Log
-import com.example.seebeepee.model.Breadcrumb
 import org.json.JSONObject
-import java.util.Locale
 import kotlin.math.*
 
 // --- Public Data Classes ---
@@ -70,6 +68,12 @@ private val dynamic10kmOffsetMap = mutableMapOf<String, GridOffset>()
 
 /**
  * Loads the 10km grid offset JSON file from the Android assets directory.
+ *
+ * This function should be invoked once when your application or main activity starts up,
+ * typically inside `MainActivity.onCreate()`.
+ *
+ * @param context The Android context used to access asset files (e.g., [android.app.Activity]).
+ * @param fileName The asset file name of the 10km offset map. Defaults to `"irish_grid_offsets_10km.json"`.
  */
 fun loadIrishGridOffsets(context: Context, fileName: String = "irish_grid_offsets_10km.json") {
     try {
@@ -81,14 +85,18 @@ fun loadIrishGridOffsets(context: Context, fileName: String = "irish_grid_offset
             val array = jsonObject.getJSONArray(key)
             dynamic10kmOffsetMap[key] = GridOffset(array.getDouble(0), array.getDouble(1))
         }
-        Log.d("CoordinateUtils", "Loaded ${dynamic10kmOffsetMap.size} 10km grid offsets.")
+        Log.d("IrishGridUtils", "Loaded ${dynamic10kmOffsetMap.size} 10km grid offsets.")
     } catch (e: Exception) {
-        Log.e("CoordinateUtils", "Failed to load 10km offsets: ${e.message}. Using 100km fallbacks.")
+        Log.e("IrishGridUtils", "Failed to load 10km offsets: ${e.message}. Using 100km fallbacks.")
     }
 }
 
 // --- Main Public Conversion Object ---
 
+/**
+ * Utility object responsible for high-precision coordinate conversions between
+ * global GPS coordinates (WGS84) and the Irish National Grid system (Airy 1830 / Transverse Mercator).
+ */
 object IrishGridConverter {
     private const val A = 6377340.189
     private const val B = 6356034.446
@@ -110,6 +118,16 @@ object IrishGridConverter {
         arrayOf('V', 'W', 'X', 'Y', 'Z')
     )
 
+    /**
+     * Converts a global GPS coordinate (WGS84) into an adjusted Irish National Grid Reference.
+     *
+     * This transforms the WGS84 coordinate into the Ireland 1975 datum, projects it via Redfern's
+     * Transverse Mercator equations, and applies the granular 10km (or fallback 100km) offset corrections
+     * to match official Ordnance Survey Ireland physical survey monuments.
+     *
+     * @param latLon The [LatLon] location in WGS84 format.
+     * @return An [IrishGridReference] containing the matching grid letter, easting, and northing.
+     */
     fun Wgs84ToIrishGrid(latLon: LatLon): IrishGridReference {
         val irl75 = wgs84ToIrl75Internal(latLon)
         val rawRef = projectToGridInternal(irl75)
@@ -122,6 +140,16 @@ object IrishGridConverter {
         )
     }
 
+    /**
+     * Converts an official Irish National Grid Reference string back to global GPS coordinates (WGS84).
+     *
+     * This strips out the local survey offset corrections, reverses the Transverse Mercator projection,
+     * transforms the datum from Ireland 1975 (Airy 1830) back to WGS84, and returns latitude/longitude.
+     *
+     * @param gridRefStr The grid reference string (e.g., `"O 16342 34211"` or `"O1634234211"`).
+     * @return A [LatLon] object containing the recovered WGS84 latitude and longitude.
+     * @throws IllegalArgumentException if the grid reference string formatting is invalid.
+     */
     fun IrishGridToWgs84(gridRefStr: String): LatLon {
         val clean = gridRefStr.replace(Regex("[^A-Z0-9]"), "").uppercase()
         require(clean.length >= 2) { "Invalid grid reference: $gridRefStr" }
@@ -138,6 +166,8 @@ object IrishGridConverter {
         val irl75 = inverseProjectToLatLonInternal(unadjustedX, unadjustedY)
         return irl75ToWgs84Internal(irl75)
     }
+
+    // --- Private Helper & Math Engine ---
 
     private fun getBestOffsetInternal(letter: Char, localEasting: Double, localNorthing: Double): GridOffset {
         val eastBlock = (localEasting / 10000).toInt().coerceIn(0, 9)
@@ -303,169 +333,5 @@ object IrishGridConverter {
         val lon = lambda0 + xXi * xRel - xXii * xRel.pow(3)
 
         return LatLon(Math.toDegrees(lat), Math.toDegrees(lon))
-    }
-}
-
-// --- CoordinateUtils Object integrating IrishGridConverter ---
-
-object CoordinateUtils {
-
-    /**
-     * Converts WGS84 latitude and longitude into Irish National Grid X and Y coordinates (meters).
-     */
-    fun latLonToMetric(lat: Double, lon: Double): Pair<Double, Double> {
-        val gridRef = IrishGridConverter.Wgs84ToIrishGrid(LatLon(lat, lon))
-        var baseE = 0.0
-        var baseN = 0.0
-        val gridLetters = arrayOf(
-            arrayOf('A', 'B', 'C', 'D', 'E'),
-            arrayOf('F', 'G', 'H', 'J', 'K'),
-            arrayOf('L', 'M', 'N', 'O', 'P'),
-            arrayOf('Q', 'R', 'S', 'T', 'U'),
-            arrayOf('V', 'W', 'X', 'Y', 'Z')
-        )
-        outer@ for (r in gridLetters.indices) {
-            for (c in gridLetters[r].indices) {
-                if (gridLetters[r][c] == gridRef.letter) {
-                    baseE = (c * 100000.0)
-                    baseN = ((4 - r) * 100000.0)
-                    break@outer
-                }
-            }
-        }
-        val x = baseE + gridRef.easting
-        val y = baseN + gridRef.northing
-        return Pair(x, y)
-    }
-
-    /**
-     * Converts Irish National Grid X and Y coordinates (meters) into WGS84 latitude and longitude.
-     */
-    fun metricToLatLon(x: Double, y: Double): Pair<Double, Double> {
-        val col = (x / 100000.0).toInt().coerceIn(0, 4)
-        val row = (4 - (y / 100000.0).toInt()).coerceIn(0, 4)
-        val gridLetters = arrayOf(
-            arrayOf('A', 'B', 'C', 'D', 'E'),
-            arrayOf('F', 'G', 'H', 'J', 'K'),
-            arrayOf('L', 'M', 'N', 'O', 'P'),
-            arrayOf('Q', 'R', 'S', 'T', 'U'),
-            arrayOf('V', 'W', 'X', 'Y', 'Z')
-        )
-        val letter = gridLetters[row][col]
-        val localE = x % 100000.0
-        val localN = y % 100000.0
-        val gridRefStr = String.format(Locale.US, "%c%05d%05d", letter, localE.toInt(), localN.toInt())
-        val latLon = IrishGridConverter.IrishGridToWgs84(gridRefStr)
-        return Pair(latLon.latitude, latLon.longitude)
-    }
-
-    /**
-     * Parses grid references like "V 860 870", "V860 870", or "V860870".
-     */
-    fun parseGridReference(ref: String): Pair<Double, Double> {
-        val cleaned = ref.trim().uppercase()
-        if (cleaned.isEmpty()) return Pair(0.0, 0.0)
-
-        val hasLetter = cleaned[0] in 'A'..'Z'
-        val letter = if (hasLetter) cleaned[0] else 'V'
-        val numericPart = if (hasLetter) cleaned.substring(1).replace(Regex("\\s+"), "") else cleaned.replace(Regex("\\s+"), "")
-
-        val halfLen = numericPart.length / 2
-        val eastingStr = if (halfLen > 0) numericPart.substring(0, halfLen) else "0"
-        val northingStr = if (halfLen > 0) numericPart.substring(halfLen) else numericPart
-
-        val localE = eastingStr.padEnd(5, '0').take(5).toDoubleOrNull() ?: 0.0
-        val localN = northingStr.padEnd(5, '0').take(5).toDoubleOrNull() ?: 0.0
-
-        val gridLetters = arrayOf(
-            arrayOf('A', 'B', 'C', 'D', 'E'),
-            arrayOf('F', 'G', 'H', 'J', 'K'),
-            arrayOf('L', 'M', 'N', 'O', 'P'),
-            arrayOf('Q', 'R', 'S', 'T', 'U'),
-            arrayOf('V', 'W', 'X', 'Y', 'Z')
-        )
-        var baseE = 0.0
-        var baseN = 0.0
-        outer@ for (r in gridLetters.indices) {
-            for (c in gridLetters[r].indices) {
-                if (gridLetters[r][c] == letter) {
-                    baseE = (c * 100000.0)
-                    baseN = ((4 - r) * 100000.0)
-                    break@outer
-                }
-            }
-        }
-
-        return Pair(baseE + localE, baseN + localN)
-    }
-
-    fun calculateDistance(x1: Double, y1: Double, x2: Double, y2: Double): Double {
-        return hypot(x2 - x1, y2 - y1)
-    }
-
-    fun calculateBearing(x1: Double, y1: Double, x2: Double, y2: Double): Double {
-        val dx = x2 - x1
-        val dy = y2 - y1
-        var angle = Math.toDegrees(atan2(dx, dy))
-        if (angle < 0) {
-            angle += 360.0
-        }
-        return angle
-    }
-
-    fun calculateSpeed(b1: Breadcrumb, b2: Breadcrumb): Double {
-        val distMeters = calculateDistance(b1.x, b1.y, b2.x, b2.y)
-        val timeSec = (b2.timestamp - b1.timestamp) / 1000.0
-        if (timeSec <= 0.0) return 0.0
-        val speedMps = distMeters / timeSec
-        return speedMps * 3.6 // km/h
-    }
-
-    fun formatGridReference6Digit(x: Double, y: Double): String {
-        val east = (((x % 100000.0) + 100000.0) % 100000.0 / 100.0).toInt().coerceIn(0, 999)
-        val north = (((y % 100000.0) + 100000.0) % 100000.0 / 100.0).toInt().coerceIn(0, 999)
-        return String.format(Locale.US, "%03d%03d", east, north)
-    }
-
-    fun formatGridReference(x: Double, y: Double, precision: Int = 6): String {
-        val col = (x / 100000.0).toInt().coerceIn(0, 4)
-        val row = (4 - (y / 100000.0).toInt()).coerceIn(0, 4)
-        val gridLetters = arrayOf(
-            arrayOf('A', 'B', 'C', 'D', 'E'),
-            arrayOf('F', 'G', 'H', 'J', 'K'),
-            arrayOf('L', 'M', 'N', 'O', 'P'),
-            arrayOf('Q', 'R', 'S', 'T', 'U'),
-            arrayOf('V', 'W', 'X', 'Y', 'Z')
-        )
-        val letter = gridLetters[row][col]
-        val localE = ((x % 100000.0) + 100000.0) % 100000.0
-        val localN = ((y % 100000.0) + 100000.0) % 100000.0
-
-        val d = when (precision) {
-            10 -> 5
-            8 -> 4
-            6 -> 3
-            else -> 3
-        }
-
-        val divisor = when (d) {
-            5 -> 1.0
-            4 -> 10.0
-            3 -> 100.0
-            2 -> 1000.0
-            1 -> 10000.0
-            else -> 100.0
-        }
-
-        val maxVal = 10.0.pow(d).toInt() - 1
-        val east = (localE / divisor).toInt().coerceIn(0, maxVal)
-        val north = (localN / divisor).toInt().coerceIn(0, maxVal)
-
-        val formatStr = "%c%0${d}d%0${d}d"
-        return String.format(Locale.US, formatStr, letter, east, north)
-    }
-
-    fun formatGridReferenceWithLetter(x: Double, y: Double, precision: Int = 6): String {
-        return formatGridReference(x, y, precision)
     }
 }

@@ -57,4 +57,12 @@ class AppPreferences(context: Context) {
     var showGridlines: Boolean
         get() = prefs.getBoolean("show_gridlines", true)
         set(value) = prefs.edit().putBoolean("show_gridlines", value).apply()
+
+    var useFullGridReference: Boolean
+        get() = prefs.getBoolean("use_full_grid_reference", false)
+        set(value) = prefs.edit().putBoolean("use_full_grid_reference", value).apply()
+
+    var gridReferencePrecision: Int
+        get() = prefs.getInt("grid_reference_precision", 6)
+        set(value) = prefs.edit().putInt("grid_reference_precision", value).apply()
 }

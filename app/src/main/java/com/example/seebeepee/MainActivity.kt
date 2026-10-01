@@ -3,6 +3,7 @@ package com.example.seebeepee
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -81,23 +82,54 @@ class MainActivity : ComponentActivity() {
                 this,
                 Manifest.permission.ACCESS_COARSE_LOCATION
             ) == PackageManager.PERMISSION_GRANTED
+            val hasNotification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ActivityCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+            } else {
+                true
+            }
 
-            if (!hasFine && !hasCoarse) {
-                RouteManager.logError("SecurityException check: Location permissions (Fine/Coarse) are missing in MainActivity.")
+            val locationManager = getSystemService(LOCATION_SERVICE) as? LocationManager
+            val isGpsOn = locationManager?.let {
+                it.isProviderEnabled(LocationManager.GPS_PROVIDER) || it.isProviderEnabled(
+                    LocationManager.NETWORK_PROVIDER)
+            } ?: false
+
+            if (!hasFine && !hasCoarse || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotification)) {
+                RouteManager.logError("Permissions check: Location or Notification permissions are missing in MainActivity. Requesting permissions.")
+                requestPermissionsIfNeeded()
                 if (startService) {
-                    RouteManager.logError("Cannot start foreground location service: Location permissions are missing.")
+                    RouteManager.logError("Cannot start foreground location service: Required permissions are missing.")
+                }
+            } else if (!isGpsOn) {
+                RouteManager.logError("Warning: Permissions verified, but GPS/Location provider is disabled in MainActivity.")
+                if (startService) {
+                    RouteManager.logError("Cannot start foreground location service: GPS is disabled.")
                 }
             } else {
-                RouteManager.logError("Location permissions verified successfully in MainActivity.")
+                RouteManager.logError("Permissions and GPS verified successfully in MainActivity.")
                 if (startService) {
                     startHikingForegroundServiceSafely()
                 }
             }
         } catch (e: SecurityException) {
-            RouteManager.logError("SecurityException while checking location permissions in MainActivity: ${e.message}")
+            RouteManager.logError("SecurityException while checking permissions in MainActivity: ${e.message}")
         } catch (e: Exception) {
-            RouteManager.logError("Error while checking location permissions in MainActivity: ${e.message}")
+            RouteManager.logError("Error while checking permissions in MainActivity: ${e.message}")
         }
+    }
+
+    private fun requestPermissionsIfNeeded() {
+        val permissionsToRequest = mutableListOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        ActivityCompat.requestPermissions(this, permissionsToRequest.toTypedArray(), 1001)
     }
 
     fun startHikingForegroundServiceSafely() {

@@ -1,14 +1,15 @@
 ## 1. Core functionality
-The main purpose of the app is to direct the hiker when the start button is pressed and to record breadcrumbs. Neither of those things happened.
+When the app starts the status message says that the GPS activity is simulated. When I press the start button it says GPS activity active. But there is no evidence that it is active. The status stays the same. The position reads the same.
 
-The app does not seem to react to the START button being pressed. There is no obvious GPS activity. The Nav#Top section does not update the current position or the overall hike metrics. There was no complaint when the app did not have location permission.
+The main purpose of the app is to direct the hiker when the start button is pressed and to record breadcrumbs. Neither of those things are happening
 
-Location permission should have been enabled or the user should have been directed to settings.
+Also, if I turn off the app's location permission, there is no notification. It just sits there reporting the wrong location.
 
-When the Finish button is pressed, then, if there are breadcrumbs, they should be saved. When the are saved, the hiker should be informed.
+The first priority is to make GPS work as a foreground service and the second priority is that if there is a problem, whether with permissions or otherwise that the user is notified.
 
-As there is a problem currently with breadcrumb behaviour, the number of breadcrumbs should be printed on the map screen.
+2. When the app starts the status message says that the GPS activity is simulated. When I press the start button it says GPS activity active. But there is no evidence that it is active. The status stays the same. The position reads the same.
+The main purpose of the app is to direct the hiker when the start button is pressed and to record breadcrumbs. Neither of those things are happening
+Also, if I turn off the app's location permission, there is no notification. It just sits there reporting the wrong location.
+The first priority is to make GPS work as a foreground service and the second priority is that if there is a problem, whether with permissions or otherwise that the user is notified.
 
-Also, if permissions are required to read the bluetooth headset play button, those permissions should be requested and if there is a problem, the hiker should be informed.
-
-These permissions should be requested when the app is installed.
+Good, now at least a value is being being displayed for current position. However it is the wrong value. Earlier I wanted the grid reference to just show six digits but it is hard to debug when it is only showing six digits, so could you change the dispaly to show the full grid reference. In fact, it would be good to have a settings value that toggles between full grid reference and the 6 digit grid reference. The map shows an arrow to where the current position is, but ithe arrow is too near the edge and so is not clearly visible. And I would like the distance to be displayed. (E.g. it would be nice to know if the GPS thought that the location was 50km away)

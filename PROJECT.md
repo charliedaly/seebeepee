@@ -41,8 +41,9 @@ Any errors, e.g. missing permissions need to be prominently displayed as the use
 
 ### 2.1 Coordinate Systems & Internal Precision vs Display/Audio
 * **Coordinate System Setting:** `"grid"` vs `"latlon"`.
+* **Grid Reference Precision Setting:** User-configurable setting in `AppPreferences` and Settings screen to select grid reference precision with options **6, 8, and 10 digits** (defaulting to 6 digits, split evenly between Easting and Northing, e.g., 6 digits = 3 Easting + 3 Northing; 8 digits = 4 Easting + 4 Northing; 10 digits = 5 Easting + 5 Northing), preceded by the zone letter (e.g. `V860870` for 6 digits, `V86008700` for 8 digits, `V8600087000` for 10 digits).
 * **Internal Precision ($X/Y$):** Full-precision metric $X$ (Easting) and $Y$ (Northing) coordinates are maintained internally for all math, tracking, distance calculations, and off-course/cone computations.
-* **Display & Audio (6-Digit Grid References):** 6-digit grid references (3 digits Easting, 3 digits Northing, omitting letter prefix e.g., `880888`) are used strictly for UI display and TTS audio announcements.
+* **Display & Audio (Grid References):** Respects the user's grid reference precision setting for navigation top status current position display, waypoint table, and TTS audio announcements.
 
 ### 2.2 Walk Time Calculation (Naismith's Rule with Adjustments)
 * **Flat Pace Setting:** User-configurable flat walking speed (e.g., 20 min/km).
@@ -116,7 +117,7 @@ If no valid route file is found on startup, displays an onboarding overlay with 
   * Short segments (<55 pixels) skip bearing rendering entirely to prevent clutter.
 * **Buffer Area:** Extra buffer area around map canvas.
 * **Minimum Map View Size:** **0.2km (200 meters)** minimum square bounding box / scale (e.g., when there is only one waypoint or default zoom).
-* **Out-of-Bounds Indicator:** Red arrow pointing from current waypoint towards current position when outside the map, with distance in meters (or km if >= 1 km).
+* **Out-of-Bounds Indicator:** Red arrow pointing towards current position when outside the map, positioned well inset from canvas edges (40 pixels padding from borders) so it is clearly visible and never clipped, with the exact distance in meters or km (e.g., `350m` or `50km`) displayed right next to the red arrow.
 * **Recording Confirmation Prompt:** If user tries to start recording before current position is on the map, prompt for confirmation ("Are you sure?").
 * **Speed-Graded Breadcrumbs:** Breadcrumbs graded by speed (Red to Blue).
 

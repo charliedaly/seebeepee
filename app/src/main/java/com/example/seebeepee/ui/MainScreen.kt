@@ -1,9 +1,12 @@
 package com.example.seebeepee.ui
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -120,39 +123,120 @@ fun MainScreen(
         )
     }
 
+    val hasLocationPermission = remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val locationManager = remember { context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager }
+    val isGpsEnabled = remember {
+        mutableStateOf(
+            locationManager?.let {
+                it.isProviderEnabled(LocationManager.GPS_PROVIDER) || it.isProviderEnabled(
+                    LocationManager.NETWORK_PROVIDER)
+            } ?: false
+        )
+    }
+
+    LaunchedEffect(Unit) {
+        hasLocationPermission.value = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        isGpsEnabled.value = locationManager?.let {
+            it.isProviderEnabled(LocationManager.GPS_PROVIDER) || it.isProviderEnabled(
+                LocationManager.NETWORK_PROVIDER)
+        } ?: false
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val fine = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
+        val coarse = permissions[Manifest.permission.ACCESS_COARSE_LOCATION] ?: false
+        hasLocationPermission.value = fine || coarse
+        if (fine || coarse) {
+            viewModel.gpsStatus = "Location Permission Granted"
+        } else {
+            viewModel.gpsStatus = "Location Permission Denied"
+            RouteManager.logError("Location permission denied by user.")
+        }
+    }
+
+    var showGpsDisabledDialog by remember { mutableStateOf(false) }
+
+    if (showGpsDisabledDialog) {
+        AlertDialog(
+            onDismissRequest = { showGpsDisabledDialog = false },
+            title = { Text("GPS is Disabled") },
+            text = { Text("GPS / Location services are disabled on your device. Please enable GPS in settings for accurate hike tracking.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showGpsDisabledDialog = false
+                    try {
+                        context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                    } catch (e: Exception) {
+                        RouteManager.logError("Error opening location settings: ${e.message}")
+                    }
+                }) {
+                    Text("Open Settings")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showGpsDisabledDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     var showOutsideMapConfirmation by remember { mutableStateOf(false) }
 
     val startTrackingAction = {
-        val serviceIntent = Intent(context, HikingForegroundService::class.java)
-        try {
-            val hasFine = ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
-            val hasCoarse = ContextCompat.checkSelfPermission(
-                context,
+        val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        hasLocationPermission.value = fine || coarse
+
+        val gpsOn = locationManager?.let {
+            it.isProviderEnabled(LocationManager.GPS_PROVIDER) || it.isProviderEnabled(
+                LocationManager.NETWORK_PROVIDER)
+        } ?: false
+        isGpsEnabled.value = gpsOn
+
+        if (!hasLocationPermission.value) {
+            RouteManager.logError("Location permissions missing when starting GPS tracking. Requesting permissions.")
+            viewModel.gpsStatus = "Permission Required"
+            val permissionsToRequest = mutableListOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
                 Manifest.permission.ACCESS_COARSE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
-
-            if (!hasFine && !hasCoarse) {
-                RouteManager.logError("Location permissions missing when starting GPS tracking.")
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
             }
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(serviceIntent)
-            } else {
-                context.startService(serviceIntent)
+            permissionLauncher.launch(permissionsToRequest.toTypedArray())
+        } else if (!gpsOn) {
+            RouteManager.logError("GPS is disabled when starting GPS tracking.")
+            viewModel.gpsStatus = "GPS Disabled"
+            showGpsDisabledDialog = true
+        } else {
+            val serviceIntent = Intent(context, HikingForegroundService::class.java)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(serviceIntent)
+                } else {
+                    context.startService(serviceIntent)
+                }
+                isTrackingActive = true
+                viewModel.gpsStatus = "GPS Tracking Active"
+            } catch (e: SecurityException) {
+                RouteManager.logError("SecurityException starting service: ${e.message}")
+                isTrackingActive = false
+                viewModel.gpsStatus = "Tracking Failed (Permission Denied)"
+            } catch (e: Exception) {
+                RouteManager.logError("Error starting service: ${e.message}")
+                isTrackingActive = false
+                viewModel.gpsStatus = "Tracking Failed"
             }
-            isTrackingActive = true
-            viewModel.gpsStatus = "GPS Tracking Active"
-        } catch (e: SecurityException) {
-            RouteManager.logError("SecurityException starting service: ${e.message}")
-            isTrackingActive = false
-            viewModel.gpsStatus = "Tracking Failed (Permission Denied)"
-        } catch (e: Exception) {
-            RouteManager.logError("Error starting service: ${e.message}")
-            isTrackingActive = false
-            viewModel.gpsStatus = "Tracking Failed"
         }
     }
 
@@ -310,6 +394,81 @@ fun MainScreen(
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // Warning Banner for Missing Location Permission
+                if (!hasLocationPermission.value) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "⚠️ Location Permission Required",
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Text(
+                                text = "SeeBeePee requires location permission to track your hike, record breadcrumbs, and calculate legs.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Button(
+                                onClick = {
+                                    val permissionsToRequest = mutableListOf(
+                                        Manifest.permission.ACCESS_FINE_LOCATION,
+                                        Manifest.permission.ACCESS_COARSE_LOCATION
+                                    )
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                        permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
+                                    }
+                                    permissionLauncher.launch(permissionsToRequest.toTypedArray())
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                            ) {
+                                Text("Grant Location & Notification Permission")
+                            }
+                        }
+                    }
+                }
+
+                // Warning Banner for GPS Disabled
+                if (hasLocationPermission.value && !isGpsEnabled.value) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "⚠️ GPS / Location Services Disabled",
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Text(
+                                text = "GPS provider is turned off in device settings. Please enable GPS for real-time tracking.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Button(
+                                onClick = {
+                                    try {
+                                        context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                                    } catch (e: Exception) {
+                                        RouteManager.logError("Error opening location settings: ${e.message}")
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                            ) {
+                                Text("Enable GPS in Settings")
+                            }
+                        }
+                    }
+                }
+
                 // First-Run Onboarding Banner if no route is loaded
                 if (waypoints.isEmpty()) {
                     Card(
@@ -394,7 +553,7 @@ fun MainScreen(
                                 val isCurrent = (index == currentIndex)
                                 val metric = if (index < legMetrics.size) legMetrics[index] else null
                                 val locStr = if (viewModel.coordinateSystem == "grid") {
-                                    formatSuccinctGrid(wp.x, wp.y)
+                                    CoordinateUtils.formatGridReferenceWithLetter(wp.x, wp.y, viewModel.gridReferencePrecision)
                                 } else {
                                     val (lat, lon) = CoordinateUtils.metricToLatLon(wp.x, wp.y)
                                     String.format(Locale.US, "%.2f, %.2f", lat, lon)
@@ -551,6 +710,32 @@ fun MainScreen(
                                 }
                             }
 
+                            // Grid Reference Precision selector (when coordinate system is grid)
+                            if (viewModel.coordinateSystem == "grid") {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(text = "Grid Reference Precision:", fontSize = 13.sp)
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        listOf(6, 8, 10).forEach { prec ->
+                                            Button(
+                                                onClick = { viewModel.updateGridReferencePrecision(prec) },
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = if (viewModel.gridReferencePrecision == prec) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+                                                ),
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Text("$prec Digits", fontSize = 12.sp)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             // Voice alerts toggle
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -623,7 +808,7 @@ fun CurrentLegMetricsCard(viewModel: MainViewModel) {
         val lastBc = RouteManager.breadcrumbs.lastOrNull()
         val x = lastBc?.x ?: RouteManager.waypoints.getOrNull(viewModel.currentIndex)?.x ?: 0.0
         val y = lastBc?.y ?: RouteManager.waypoints.getOrNull(viewModel.currentIndex)?.y ?: 0.0
-        formatSuccinctGrid(x, y)
+        CoordinateUtils.formatGridReferenceWithLetter(x, y, viewModel.gridReferencePrecision)
     } else {
         viewModel.currentPositionString
     }
@@ -708,10 +893,6 @@ fun MetricItem(label: String, value: String) {
         Text(text = label, fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
         Text(text = value, fontSize = 12.sp, fontWeight = FontWeight.Bold)
     }
-}
-
-fun formatSuccinctGrid(x: Double, y: Double): String {
-    return CoordinateUtils.formatGridReference6Digit(x, y)
 }
 
 fun formatHoursMinutes(totalMinutes: Double): String {

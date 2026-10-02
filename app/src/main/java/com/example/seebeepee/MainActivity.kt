@@ -23,6 +23,7 @@ import com.example.seebeepee.service.HikingForegroundService
 import com.example.seebeepee.ui.MainScreen
 import com.example.seebeepee.ui.MapScreen
 import com.example.seebeepee.ui.theme.SeeBeePeeTheme
+import com.example.seebeepee.util.TtsManager
 import com.example.seebeepee.viewmodel.MainViewModel
 import kotlinx.serialization.Serializable
 
@@ -36,10 +37,20 @@ sealed interface AppScreen {
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
+    private lateinit var ttsManager: TtsManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Initialize TtsManager for independent startup test
+        ttsManager = TtsManager(applicationContext)
+
+        // Give the TTS engine a tiny window to bind, then speak a verification phrase
+        window.decorView.postDelayed({
+            ttsManager.speak("TTS engine initialized and ready.")
+        }, 1500)
+
         checkLocationPermissionsAndStartTracking()
 
         setContent {
@@ -94,7 +105,8 @@ class MainActivity : ComponentActivity() {
             val locationManager = getSystemService(LOCATION_SERVICE) as? LocationManager
             val isGpsOn = locationManager?.let {
                 it.isProviderEnabled(LocationManager.GPS_PROVIDER) || it.isProviderEnabled(
-                    LocationManager.NETWORK_PROVIDER)
+                    LocationManager.NETWORK_PROVIDER
+                )
             } ?: false
 
             if (!hasFine && !hasCoarse || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotification)) {
@@ -160,5 +172,10 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             RouteManager.logError("Exception caught when starting foreground service from MainActivity: ${e.message}")
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        ttsManager.shutdown()
     }
 }

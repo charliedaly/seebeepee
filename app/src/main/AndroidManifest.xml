@@ -31,7 +31,7 @@
         <receiver
             android:name="androidx.media.session.MediaButtonReceiver"
             android:exported="true">
-            <intent-filter>
+            <intent-filter android:priority="9999">
                 <action android:name="android.intent.action.MEDIA_BUTTON" />
             </intent-filter>
         </receiver>

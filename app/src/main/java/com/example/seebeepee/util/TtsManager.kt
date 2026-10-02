@@ -6,9 +6,11 @@ import android.speech.tts.TextToSpeech
 import com.example.seebeepee.model.RouteManager
 import java.util.Locale
 
-class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
-    private var tts: TextToSpeech? = TextToSpeech(context, this)
+class TtsManager(context: Context) : TextToSpeech.OnInitListener {
+    private val appContext = context.applicationContext
+    private var tts: TextToSpeech? = TextToSpeech(appContext, this)
     private var isInitialized = false
+    private val pendingUtterances = mutableListOf<String>()
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
@@ -20,13 +22,41 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
             tts?.setAudioAttributes(audioAttributes)
+
+            if (isInitialized) {
+                RouteManager.logError("TtsManager: Initialized successfully.")
+                synchronized(pendingUtterances) {
+                    for (text in pendingUtterances) {
+                        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+                        RouteManager.logError("TTS Spoken (queued): $text")
+                    }
+                    pendingUtterances.clear()
+                }
+            } else {
+                RouteManager.logError("TtsManager: Language US missing or unsupported.")
+            }
+        } else {
+            RouteManager.logError("TtsManager: Initialization failed with status $status")
         }
     }
 
     fun speak(text: String) {
-        if (isInitialized && AppPreferences(context).voiceAlertsEnabled) {
-            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
-            RouteManager.logError("TTS Spoken: $text")
+        // Temporarily bypass preference check to test if sound works.
+        // Once working, you can change this back to: if (AppPreferences(appContext).voiceAlertsEnabled)
+        val alertsEnabled = true
+
+        if (alertsEnabled) {
+            if (isInitialized) {
+                tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+                RouteManager.logError("TTS Spoken: $text")
+            } else {
+                synchronized(pendingUtterances) {
+                    pendingUtterances.add(text)
+                }
+                RouteManager.logError("TTS Queued (not initialized yet): $text")
+            }
+        } else {
+            RouteManager.logError("TTS Blocked: voiceAlertsEnabled preference is false.")
         }
     }
 
@@ -34,6 +64,8 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         try {
             tts?.stop()
             tts?.shutdown()
+            tts = null
+            isInitialized = false
         } catch (e: Exception) {
             // Ignore
         }

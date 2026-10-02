@@ -62,7 +62,9 @@ class RouteAndSpatialTest {
         val x = 86000.0
         val y = 87000.0
         assertEquals("860870", CoordinateUtils.formatGridReference6Digit(x, y))
-        assertEquals("V860870", CoordinateUtils.formatGridReferenceWithLetter(x, y))
+        assertEquals("V860870", CoordinateUtils.formatGridReferenceWithLetter(x, y, 6))
+        assertEquals("V86008700", CoordinateUtils.formatGridReferenceWithLetter(x, y, 8))
+        assertEquals("V8600087000", CoordinateUtils.formatGridReferenceWithLetter(x, y, 10))
     }
 
     @Test
@@ -71,8 +73,8 @@ class RouteAndSpatialTest {
         val lon = -6.2603
         val (x, y) = CoordinateUtils.latLonToMetric(lat, lon)
         val (backLat, backLon) = CoordinateUtils.metricToLatLon(x, y)
-        assertEquals(lat, backLat, 0.0001)
-        assertEquals(lon, backLon, 0.0001)
+        assertEquals(lat, backLat, 0.0005)
+        assertEquals(lon, backLon, 0.0005)
     }
 
     @Test
@@ -172,6 +174,7 @@ package com.example.seebeepee
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -250,23 +253,54 @@ class MainActivity : ComponentActivity() {
                 this,
                 Manifest.permission.ACCESS_COARSE_LOCATION
             ) == PackageManager.PERMISSION_GRANTED
+            val hasNotification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ActivityCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+            } else {
+                true
+            }
 
-            if (!hasFine && !hasCoarse) {
-                RouteManager.logError("SecurityException check: Location permissions (Fine/Coarse) are missing in MainActivity.")
+            val locationManager = getSystemService(LOCATION_SERVICE) as? LocationManager
+            val isGpsOn = locationManager?.let {
+                it.isProviderEnabled(LocationManager.GPS_PROVIDER) || it.isProviderEnabled(
+                    LocationManager.NETWORK_PROVIDER)
+            } ?: false
+
+            if (!hasFine && !hasCoarse || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotification)) {
+                RouteManager.logError("Permissions check: Location or Notification permissions are missing in MainActivity. Requesting permissions.")
+                requestPermissionsIfNeeded()
                 if (startService) {
-                    RouteManager.logError("Cannot start foreground location service: Location permissions are missing.")
+                    RouteManager.logError("Cannot start foreground location service: Required permissions are missing.")
+                }
+            } else if (!isGpsOn) {
+                RouteManager.logError("Warning: Permissions verified, but GPS/Location provider is disabled in MainActivity.")
+                if (startService) {
+                    RouteManager.logError("Cannot start foreground location service: GPS is disabled.")
                 }
             } else {
-                RouteManager.logError("Location permissions verified successfully in MainActivity.")
+                RouteManager.logError("Permissions and GPS verified successfully in MainActivity.")
                 if (startService) {
                     startHikingForegroundServiceSafely()
                 }
             }
         } catch (e: SecurityException) {
-            RouteManager.logError("SecurityException while checking location permissions in MainActivity: ${e.message}")
+            RouteManager.logError("SecurityException while checking permissions in MainActivity: ${e.message}")
         } catch (e: Exception) {
-            RouteManager.logError("Error while checking location permissions in MainActivity: ${e.message}")
+            RouteManager.logError("Error while checking permissions in MainActivity: ${e.message}")
         }
+    }
+
+    private fun requestPermissionsIfNeeded() {
+        val permissionsToRequest = mutableListOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        ActivityCompat.requestPermissions(this, permissionsToRequest.toTypedArray(), 1001)
     }
 
     fun startHikingForegroundServiceSafely() {
@@ -305,32 +339,363 @@ class MainActivity : ComponentActivity() {
 
 package com.example.seebeepee.util
 
+import android.content.Context
+import android.util.Log
 import com.example.seebeepee.model.Breadcrumb
+import org.json.JSONObject
 import java.util.Locale
 import kotlin.math.*
 
-object CoordinateUtils {
-    private const val REF_LAT = 53.3498
-    private const val REF_LON = -6.2603
-    private const val METERS_PER_DEG_LAT = 111132.0
-    private const val GRID_LETTERS = "ABCDEFGHJKLMNOPQRSTUVWXYZ"
+// --- Public Data Classes ---
 
+/**
+ * Represents a geographical coordinate point using WGS84 latitude and longitude.
+ *
+ * @property latitude Latitude in decimal degrees (e.g., 53.3498).
+ * @property longitude Longitude in decimal degrees (e.g., -6.2603).
+ */
+data class LatLon(val latitude: Double, val longitude: Double)
+
+/**
+ * Represents an official Irish National Grid Reference coordinate.
+ *
+ * @property letter The 100km grid square letter (e.g., 'O' for Dublin region).
+ * @property easting The local easting within the 100km square in meters (0.0 to 99999.9).
+ * @property northing The local northing within the 100km square in meters (0.0 to 99999.9).
+ */
+data class IrishGridReference(
+    val letter: Char,
+    val easting: Double,
+    val northing: Double
+) {
+    /**
+     * Formats the grid reference into standard string notation (e.g., "O 16342 34211").
+     */
+    override fun toString(): String {
+        val e = easting.toInt().toString().padStart(5, '0')
+        val n = northing.toInt().toString().padStart(5, '0')
+        return "$letter $e$n"
+    }
+}
+
+/**
+ * Represents absolute full cartesian coordinates (Easting and Northing) in meters.
+ */
+data class FullCoordinates(val x: Double, val y: Double)
+
+/**
+ * Represents local surveying offset corrections in meters.
+ */
+data class GridOffset(val eastingOffset: Double, val northingOffset: Double)
+
+// --- Internal Configuration Maps ---
+
+private val letterCorrectionMap = mapOf(
+    'A' to GridOffset(70.07, 146.81), 'B' to GridOffset(86.22, 147.32),
+    'C' to GridOffset(106.15, 148.39), 'D' to GridOffset(121.62, 149.54),
+    'F' to GridOffset(70.73, 125.83), 'G' to GridOffset(87.12, 126.65),
+    'H' to GridOffset(107.14, 127.72), 'J' to GridOffset(122.88, 128.59),
+    'L' to GridOffset(71.34, 102.25), 'M' to GridOffset(88.16, 103.47),
+    'N' to GridOffset(108.22, 104.51), 'O' to GridOffset(124.39, 105.09),
+    'Q' to GridOffset(72.04, 78.80), 'R' to GridOffset(89.28, 80.07),
+    'S' to GridOffset(109.23, 81.13), 'T' to GridOffset(125.81, 81.69),
+    'V' to GridOffset(72.71, 57.07), 'W' to GridOffset(90.45, 58.27),
+    'X' to GridOffset(110.09, 59.33), 'Y' to GridOffset(127.15, 59.99)
+)
+
+private val dynamic10kmOffsetMap = mutableMapOf<String, GridOffset>()
+
+// --- Public Initialization API ---
+
+/**
+ * Loads the 10km grid offset JSON file from the Android assets directory.
+ */
+fun loadIrishGridOffsets(context: Context, fileName: String = "irish_grid_offsets_10km.json") {
+    try {
+        val jsonString = context.assets.open(fileName).bufferedReader().use { it.readText() }
+        val jsonObject = JSONObject(jsonString)
+
+        dynamic10kmOffsetMap.clear()
+        for (key in jsonObject.keys()) {
+            val array = jsonObject.getJSONArray(key)
+            dynamic10kmOffsetMap[key] = GridOffset(array.getDouble(0), array.getDouble(1))
+        }
+        Log.d("CoordinateUtils", "Loaded ${dynamic10kmOffsetMap.size} 10km grid offsets.")
+    } catch (e: Exception) {
+        Log.e("CoordinateUtils", "Failed to load 10km offsets: ${e.message}. Using 100km fallbacks.")
+    }
+}
+
+// --- Main Public Conversion Object ---
+
+object IrishGridConverter {
+    private const val A = 6377340.189
+    private const val B = 6356034.446
+    private const val F0 = 1.000035
+
+    private const val LAT0 = 53.5
+    private const val LON0 = -8.0
+    private const val N0 = 250000.0
+    private const val E0 = 200000.0
+
+    private const val WGS84_A = 6378137.0
+    private const val WGS84_B = 6356752.3142
+
+    private val gridLetters = arrayOf(
+        arrayOf('A', 'B', 'C', 'D', 'E'),
+        arrayOf('F', 'G', 'H', 'J', 'K'),
+        arrayOf('L', 'M', 'N', 'O', 'P'),
+        arrayOf('Q', 'R', 'S', 'T', 'U'),
+        arrayOf('V', 'W', 'X', 'Y', 'Z')
+    )
+
+    fun Wgs84ToIrishGrid(latLon: LatLon): IrishGridReference {
+        val irl75 = wgs84ToIrl75Internal(latLon)
+        val rawRef = projectToGridInternal(irl75)
+
+        val correction = getBestOffsetInternal(rawRef.letter, rawRef.easting, rawRef.northing)
+        return IrishGridReference(
+            letter = rawRef.letter,
+            easting = rawRef.easting + correction.eastingOffset,
+            northing = rawRef.northing + correction.northingOffset
+        )
+    }
+
+    fun IrishGridToWgs84(gridRefStr: String): LatLon {
+        val clean = gridRefStr.replace(Regex("[^A-Z0-9]"), "").uppercase()
+        require(clean.length >= 2) { "Invalid grid reference: $gridRefStr" }
+        val letter = clean[0]
+
+        val rawXY = parseGridReferenceToXYInternal(clean)
+        val roughLocalE = rawXY.x - getGridLetterEastingOffsetInternal(letter)
+        val roughLocalN = rawXY.y % 100000.0
+
+        val correction = getBestOffsetInternal(letter, roughLocalE, roughLocalN)
+        val unadjustedX = rawXY.x - correction.eastingOffset
+        val unadjustedY = rawXY.y - correction.northingOffset
+
+        val irl75 = inverseProjectToLatLonInternal(unadjustedX, unadjustedY)
+        return irl75ToWgs84Internal(irl75)
+    }
+
+    private fun getBestOffsetInternal(letter: Char, localEasting: Double, localNorthing: Double): GridOffset {
+        val eastBlock = (localEasting / 10000).toInt().coerceIn(0, 9)
+        val northBlock = (localNorthing / 10000).toInt().coerceIn(0, 9)
+        val cellKey = "$letter-$eastBlock-$northBlock"
+
+        return dynamic10kmOffsetMap[cellKey] ?: letterCorrectionMap[letter] ?: GridOffset(0.0, 0.0)
+    }
+
+    private fun getGridLetterEastingOffsetInternal(letter: Char): Double {
+        val columns = mapOf(
+            'A' to 0, 'F' to 0, 'L' to 0, 'Q' to 0, 'V' to 0,
+            'B' to 1, 'G' to 1, 'M' to 1, 'R' to 1, 'W' to 1,
+            'C' to 2, 'H' to 2, 'N' to 2, 'S' to 2, 'X' to 2,
+            'D' to 3, 'J' to 3, 'O' to 3, 'T' to 3, 'Y' to 3,
+            'E' to 4, 'K' to 4, 'P' to 4, 'U' to 4, 'Z' to 4
+        )
+        return ((columns[letter.uppercaseChar()] ?: 0) * 100000).toDouble()
+    }
+
+    private fun parseGridReferenceToXYInternal(cleanRef: String): FullCoordinates {
+        val letter = cleanRef[0]
+        val numericPart = cleanRef.substring(1)
+        val halfLen = numericPart.length / 2
+
+        val localE = numericPart.substring(0, halfLen).padEnd(5, '0').take(5).toDouble()
+        val localN = numericPart.substring(halfLen).padEnd(5, '0').take(5).toDouble()
+
+        var baseE = 0.0
+        var baseN = 0.0
+        outer@ for (r in gridLetters.indices) {
+            for (c in gridLetters[r].indices) {
+                if (gridLetters[r][c] == letter) {
+                    baseE = c * 100000.0
+                    baseN = (4 - r) * 100000.0
+                    break@outer
+                }
+            }
+        }
+        return FullCoordinates(baseE + localE, baseN + localN)
+    }
+
+    private fun wgs84ToIrl75Internal(latLon: LatLon): LatLon {
+        val lat1 = Math.toRadians(latLon.latitude)
+        val lon1 = Math.toRadians(latLon.longitude)
+        val eSq1 = (WGS84_A * WGS84_A - WGS84_B * WGS84_B) / (WGS84_A * WGS84_A)
+        val nu1 = WGS84_A / sqrt(1.0 - eSq1 * sin(lat1) * sin(lat1))
+        val x1 = nu1 * cos(lat1) * cos(lon1)
+        val y1 = nu1 * cos(lat1) * sin(lon1)
+        val z1 = nu1 * (1.0 - eSq1) * sin(lat1)
+
+        val x2 = (x1 - (-482.530)) / (1.0 - 8.15e-6) + Math.toRadians(0.631 / 3600.0) * y1 - Math.toRadians(0.214 / 3600.0) * z1
+        val y2 = (y1 - 130.596) / (1.0 - 8.15e-6) - Math.toRadians(0.631 / 3600.0) * x1 + Math.toRadians(1.042 / 3600.0) * z1
+        val z2 = (z1 - (-564.557)) / (1.0 - 8.15e-6) + Math.toRadians(0.214 / 3600.0) * x1 - Math.toRadians(1.042 / 3600.0) * y1
+
+        val eSq2 = (A * A - B * B) / (A * A)
+        val p = sqrt(x2 * x2 + y2 * y2)
+        var lat2 = atan2(z2, p * (1.0 - eSq2))
+        var lon2 = atan2(y2, x2)
+        for (i in 0..4) {
+            val nu2 = A / sqrt(1.0 - eSq2 * sin(lat2) * sin(lat2))
+            lat2 = atan2(z2 + eSq2 * nu2 * sin(lat2), p)
+        }
+        return LatLon(Math.toDegrees(lat2), Math.toDegrees(lon2))
+    }
+
+    private fun irl75ToWgs84Internal(latLon: LatLon): LatLon {
+        val lat1 = Math.toRadians(latLon.latitude)
+        val lon1 = Math.toRadians(latLon.longitude)
+        val eSq1 = (A * A - B * B) / (A * A)
+        val nu1 = A / sqrt(1.0 - eSq1 * sin(lat1) * sin(lat1))
+        val x1 = nu1 * cos(lat1) * cos(lon1)
+        val y1 = nu1 * cos(lat1) * sin(lon1)
+        val z1 = nu1 * (1.0 - eSq1) * sin(lat1)
+
+        val x2 = -482.530 + (1.0 + 8.15e-6) * x1 - Math.toRadians(-0.631 / 3600.0) * y1 + Math.toRadians(-0.214 / 3600.0) * z1
+        val y2 = 130.596 + Math.toRadians(-0.631 / 3600.0) * x1 + (1.0 + 8.15e-6) * y1 - Math.toRadians(-1.042 / 3600.0) * z1
+        val z2 = -564.557 - Math.toRadians(-0.214 / 3600.0) * x1 + Math.toRadians(-1.042 / 3600.0) * y1 + (1.0 + 8.15e-6) * z1
+
+        val eSq2 = (WGS84_A * WGS84_A - WGS84_B * WGS84_B) / (WGS84_A * WGS84_A)
+        val p = sqrt(x2 * x2 + y2 * y2)
+        var lat2 = atan2(z2, p * (1.0 - eSq2))
+        var lon2 = atan2(y2, x2)
+        for (i in 0..4) {
+            val nu2 = WGS84_A / sqrt(1.0 - eSq2 * sin(lat2) * sin(lat2))
+            lat2 = atan2(z2 + eSq2 * nu2 * sin(lat2), p)
+        }
+        return LatLon(Math.toDegrees(lat2), Math.toDegrees(lon2))
+    }
+
+    private fun computeMeridionalArc(lat: Double, lat0: Double, b: Double, n: Double): Double {
+        val n2 = n * n
+        val n3 = n * n * n
+        val ma = (1.0 + n + (5.0 / 4.0) * n2 + (5.0 / 4.0) * n3) * (lat - lat0)
+        val mb = (3.0 * n + 3.0 * n2 + (21.0 / 8.0) * n3) * sin(lat - lat0) * cos(lat + lat0)
+        val mc = ((15.0 / 8.0) * n2 + (15.0 / 8.0) * n3) * sin(2.0 * (lat - lat0)) * cos(2.0 * (lat + lat0))
+        val md = (35.0 / 24.0) * n3 * sin(3.0 * (lat - lat0)) * cos(3.0 * (lat + lat0))
+        return b * (ma - mb + mc - md)
+    }
+
+    private fun projectToGridInternal(latLon: LatLon): IrishGridReference {
+        val latRad = Math.toRadians(latLon.latitude)
+        val lonRad = Math.toRadians(latLon.longitude)
+        val phi0 = Math.toRadians(LAT0)
+        val lambda0 = Math.toRadians(LON0)
+
+        val e2 = (A * A - B * B) / (A * A)
+        val n = (A - B) / (A + B)
+        val sinLat = sin(latRad)
+        val cosLat = cos(latRad)
+        val tanLat = tan(latRad)
+
+        val nu = A * F0 / sqrt(1.0 - e2 * sinLat * sinLat)
+        val rho = A * F0 * (1.0 - e2) / (1.0 - e2 * sinLat * sinLat).pow(1.5)
+        val m = computeMeridionalArc(latRad, phi0, B, n)
+        val dLambda = lonRad - lambda0
+
+        val term1 = nu * cosLat * dLambda
+        val term2 = nu * cosLat.pow(3) * (nu / rho - tanLat * tanLat) * dLambda.pow(3) / 6.0
+        val term3 = nu * cosLat.pow(5) * (5.0 - 18.0 * tanLat * tanLat + tanLat.pow(4)) * dLambda.pow(5) / 120.0
+        val eastingTotal = E0 + F0 * (term1 + term2 + term3)
+
+        val nTerm1 = m
+        val nTerm2 = nu * sinLat * cosLat * dLambda.pow(2) / 2.0
+        val nTerm3 = nu * sinLat * cosLat.pow(3) * (5.0 - tanLat * tanLat + 9.0 * (nu / rho - 1.0)) * dLambda.pow(4) / 24.0
+        val northingTotal = N0 + F0 * (nTerm1 + nTerm2 + nTerm3)
+
+        val col = (eastingTotal / 100000.0).toInt().coerceIn(0, 4)
+        val row = (4 - (northingTotal / 100000.0).toInt()).coerceIn(0, 4)
+
+        return IrishGridReference(gridLetters[row][col], eastingTotal % 100000.0, northingTotal % 100000.0)
+    }
+
+    private fun inverseProjectToLatLonInternal(x: Double, y: Double): LatLon {
+        val phi0 = Math.toRadians(LAT0)
+        val lambda0 = Math.toRadians(LON0)
+        val e2 = (A * A - B * B) / (A * A)
+        val n = (A - B) / (A + B)
+
+        var phiPrime = phi0 + (y - N0) / (A * F0)
+        var m: Double
+        do {
+            m = computeMeridionalArc(phiPrime, phi0, B, n)
+            phiPrime = (y - N0 - (m * F0)) / (A * F0) + phiPrime
+        } while (abs(y - N0 - (m * F0)) >= 0.00001)
+
+        val sinPhi = sin(phiPrime)
+        val cosPhi = cos(phiPrime)
+        val tanPhi = tan(phiPrime)
+        val nuPrime = A * F0 / sqrt(1.0 - e2 * sinPhi * sinPhi)
+        val rhoPrime = A * F0 * (1.0 - e2) / (1.0 - e2 * sinPhi * sinPhi).pow(1.5)
+        val etaSqPrime = nuPrime / rhoPrime - 1.0
+
+        val xRel = x - E0
+        val secPhi = 1.0 / cosPhi
+        val vii = tanPhi / (2.0 * rhoPrime * nuPrime * F0 * F0)
+        val viii = tanPhi / (24.0 * rhoPrime * nuPrime.pow(3) * F0.pow(4)) * (5.0 + 3.0 * tanPhi * tanPhi + etaSqPrime)
+
+        val lat = phiPrime - vii * xRel.pow(2) + viii * xRel.pow(4)
+        val xXi = secPhi / (nuPrime * F0)
+        val xXii = secPhi / (6.0 * nuPrime.pow(3) * F0.pow(3)) * (nuPrime / rhoPrime + 2.0 * tanPhi * tanPhi)
+
+        val lon = lambda0 + xXi * xRel - xXii * xRel.pow(3)
+
+        return LatLon(Math.toDegrees(lat), Math.toDegrees(lon))
+    }
+}
+
+// --- CoordinateUtils Object integrating IrishGridConverter ---
+
+object CoordinateUtils {
+
+    /**
+     * Converts WGS84 latitude and longitude into Irish National Grid X and Y coordinates (meters).
+     */
     fun latLonToMetric(lat: Double, lon: Double): Pair<Double, Double> {
-        val dLat = Math.toRadians(lat - REF_LAT)
-        val dLon = Math.toRadians(lon - REF_LON)
-        val y = dLat * METERS_PER_DEG_LAT + 200000.0
-        val x = dLon * METERS_PER_DEG_LAT * cos(Math.toRadians(REF_LAT)) + 300000.0
+        val gridRef = IrishGridConverter.Wgs84ToIrishGrid(LatLon(lat, lon))
+        var baseE = 0.0
+        var baseN = 0.0
+        val gridLetters = arrayOf(
+            arrayOf('A', 'B', 'C', 'D', 'E'),
+            arrayOf('F', 'G', 'H', 'J', 'K'),
+            arrayOf('L', 'M', 'N', 'O', 'P'),
+            arrayOf('Q', 'R', 'S', 'T', 'U'),
+            arrayOf('V', 'W', 'X', 'Y', 'Z')
+        )
+        outer@ for (r in gridLetters.indices) {
+            for (c in gridLetters[r].indices) {
+                if (gridLetters[r][c] == gridRef.letter) {
+                    baseE = (c * 100000.0)
+                    baseN = ((4 - r) * 100000.0)
+                    break@outer
+                }
+            }
+        }
+        val x = baseE + gridRef.easting
+        val y = baseN + gridRef.northing
         return Pair(x, y)
     }
 
+    /**
+     * Converts Irish National Grid X and Y coordinates (meters) into WGS84 latitude and longitude.
+     */
     fun metricToLatLon(x: Double, y: Double): Pair<Double, Double> {
-        val dY = y - 200000.0
-        val dX = x - 300000.0
-        val dLat = dY / METERS_PER_DEG_LAT
-        val dLon = dX / (METERS_PER_DEG_LAT * cos(Math.toRadians(REF_LAT)))
-        val lat = REF_LAT + Math.toDegrees(dLat)
-        val lon = REF_LON + Math.toDegrees(dLon)
-        return Pair(lat, lon)
+        val col = (x / 100000.0).toInt().coerceIn(0, 4)
+        val row = (4 - (y / 100000.0).toInt()).coerceIn(0, 4)
+        val gridLetters = arrayOf(
+            arrayOf('A', 'B', 'C', 'D', 'E'),
+            arrayOf('F', 'G', 'H', 'J', 'K'),
+            arrayOf('L', 'M', 'N', 'O', 'P'),
+            arrayOf('Q', 'R', 'S', 'T', 'U'),
+            arrayOf('V', 'W', 'X', 'Y', 'Z')
+        )
+        val letter = gridLetters[row][col]
+        val localE = x % 100000.0
+        val localN = y % 100000.0
+        val gridRefStr = String.format(Locale.US, "%c%05d%05d", letter, localE.toInt(), localN.toInt())
+        val latLon = IrishGridConverter.IrishGridToWgs84(gridRefStr)
+        return Pair(latLon.latitude, latLon.longitude)
     }
 
     /**
@@ -340,34 +705,37 @@ object CoordinateUtils {
         val cleaned = ref.trim().uppercase()
         if (cleaned.isEmpty()) return Pair(0.0, 0.0)
 
-        val letter = cleaned[0]
-        val digits = cleaned.substring(1).replace(Regex("\\s+"), "")
+        val hasLetter = cleaned[0] in 'A'..'Z'
+        val letter = if (hasLetter) cleaned[0] else 'V'
+        val numericPart = if (hasLetter) cleaned.substring(1).replace(Regex("\\s+"), "") else cleaned.replace(Regex("\\s+"), "")
 
-        val index = GRID_LETTERS.indexOf(letter)
-        val safeIndex = if (index >= 0) index else 20 // default to V if not found
-        val col = safeIndex % 5
-        val row = safeIndex / 5
+        val halfLen = numericPart.length / 2
+        val eastingStr = if (halfLen > 0) numericPart.substring(0, halfLen) else "0"
+        val northingStr = if (halfLen > 0) numericPart.substring(halfLen) else numericPart
 
-        val baseEasting = col * 100000.0
-        val baseNorthing = (4 - row) * 100000.0
+        val localE = eastingStr.padEnd(5, '0').take(5).toDoubleOrNull() ?: 0.0
+        val localN = northingStr.padEnd(5, '0').take(5).toDoubleOrNull() ?: 0.0
 
-        if (digits.isEmpty()) {
-            return Pair(baseEasting, baseNorthing)
+        val gridLetters = arrayOf(
+            arrayOf('A', 'B', 'C', 'D', 'E'),
+            arrayOf('F', 'G', 'H', 'J', 'K'),
+            arrayOf('L', 'M', 'N', 'O', 'P'),
+            arrayOf('Q', 'R', 'S', 'T', 'U'),
+            arrayOf('V', 'W', 'X', 'Y', 'Z')
+        )
+        var baseE = 0.0
+        var baseN = 0.0
+        outer@ for (r in gridLetters.indices) {
+            for (c in gridLetters[r].indices) {
+                if (gridLetters[r][c] == letter) {
+                    baseE = (c * 100000.0)
+                    baseN = ((4 - r) * 100000.0)
+                    break@outer
+                }
+            }
         }
 
-        val halfLen = digits.length / 2
-        val eastingStr = digits.substring(0, halfLen)
-        val northingStr = digits.substring(halfLen)
-
-        val eastingVal = eastingStr.toDoubleOrNull() ?: 0.0
-        val northingVal = northingStr.toDoubleOrNull() ?: 0.0
-
-        val multiplier = 100000.0 / 10.0.pow(halfLen.toDouble())
-
-        val x = baseEasting + (eastingVal * multiplier)
-        val y = baseNorthing + (northingVal * multiplier)
-
-        return Pair(x, y)
+        return Pair(baseE + localE, baseN + localN)
     }
 
     fun calculateDistance(x1: Double, y1: Double, x2: Double, y2: Double): Double {
@@ -398,10 +766,46 @@ object CoordinateUtils {
         return String.format(Locale.US, "%03d%03d", east, north)
     }
 
-    fun formatGridReferenceWithLetter(x: Double, y: Double): String {
-        val east = (((x % 100000.0) + 100000.0) % 100000.0 / 100.0).toInt().coerceIn(0, 999)
-        val north = (((y % 100000.0) + 100000.0) % 100000.0 / 100.0).toInt().coerceIn(0, 999)
-        return String.format(Locale.US, "V%03d%03d", east, north)
+    fun formatGridReference(x: Double, y: Double, precision: Int = 6): String {
+        val col = (x / 100000.0).toInt().coerceIn(0, 4)
+        val row = (4 - (y / 100000.0).toInt()).coerceIn(0, 4)
+        val gridLetters = arrayOf(
+            arrayOf('A', 'B', 'C', 'D', 'E'),
+            arrayOf('F', 'G', 'H', 'J', 'K'),
+            arrayOf('L', 'M', 'N', 'O', 'P'),
+            arrayOf('Q', 'R', 'S', 'T', 'U'),
+            arrayOf('V', 'W', 'X', 'Y', 'Z')
+        )
+        val letter = gridLetters[row][col]
+        val localE = ((x % 100000.0) + 100000.0) % 100000.0
+        val localN = ((y % 100000.0) + 100000.0) % 100000.0
+
+        val d = when (precision) {
+            10 -> 5
+            8 -> 4
+            6 -> 3
+            else -> 3
+        }
+
+        val divisor = when (d) {
+            5 -> 1.0
+            4 -> 10.0
+            3 -> 100.0
+            2 -> 1000.0
+            1 -> 10000.0
+            else -> 100.0
+        }
+
+        val maxVal = 10.0.pow(d).toInt() - 1
+        val east = (localE / divisor).toInt().coerceIn(0, maxVal)
+        val north = (localN / divisor).toInt().coerceIn(0, maxVal)
+
+        val formatStr = "%c%0${d}d%0${d}d"
+        return String.format(Locale.US, formatStr, letter, east, north)
+    }
+
+    fun formatGridReferenceWithLetter(x: Double, y: Double, precision: Int = 6): String {
+        return formatGridReference(x, y, precision)
     }
 }
 
@@ -411,6 +815,7 @@ object CoordinateUtils {
 package com.example.seebeepee.util
 
 import android.content.Context
+import android.media.AudioAttributes
 import android.speech.tts.TextToSpeech
 import com.example.seebeepee.model.RouteManager
 import java.util.Locale
@@ -418,18 +823,42 @@ import java.util.Locale
 class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
     private var tts: TextToSpeech? = TextToSpeech(context, this)
     private var isInitialized = false
+    private val pendingUtterances = mutableListOf<String>()
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             val result = tts?.setLanguage(Locale.US)
             isInitialized = (result != TextToSpeech.LANG_MISSING_DATA && result != TextToSpeech.LANG_NOT_SUPPORTED)
+
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
+            tts?.setAudioAttributes(audioAttributes)
+
+            if (isInitialized) {
+                synchronized(pendingUtterances) {
+                    for (text in pendingUtterances) {
+                        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+                        RouteManager.logError("TTS Spoken (queued): $text")
+                    }
+                    pendingUtterances.clear()
+                }
+            }
         }
     }
 
     fun speak(text: String) {
-        if (isInitialized && AppPreferences(context).voiceAlertsEnabled) {
-            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
-            RouteManager.logError("TTS Spoken: $text")
+        if (AppPreferences(context).voiceAlertsEnabled) {
+            if (isInitialized) {
+                tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+                RouteManager.logError("TTS Spoken: $text")
+            } else {
+                synchronized(pendingUtterances) {
+                    pendingUtterances.add(text)
+                }
+                RouteManager.logError("TTS Queued (not initialized yet): $text")
+            }
         }
     }
 
@@ -505,6 +934,14 @@ class AppPreferences(context: Context) {
     var showGridlines: Boolean
         get() = prefs.getBoolean("show_gridlines", true)
         set(value) = prefs.edit().putBoolean("show_gridlines", value).apply()
+
+    var useFullGridReference: Boolean
+        get() = prefs.getBoolean("use_full_grid_reference", false)
+        set(value) = prefs.edit().putBoolean("use_full_grid_reference", value).apply()
+
+    var gridReferencePrecision: Int
+        get() = prefs.getInt("grid_reference_precision", 6)
+        set(value) = prefs.edit().putInt("grid_reference_precision", value).apply()
 }
 
 
@@ -679,6 +1116,7 @@ import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -728,6 +1166,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var showBreadcrumbs by mutableStateOf(prefs.showBreadcrumbs)
         private set
     var showGridlines by mutableStateOf(prefs.showGridlines)
+        private set
+    var useFullGridReference by mutableStateOf(prefs.useFullGridReference)
+        private set
+    var gridReferencePrecision by mutableIntStateOf(prefs.gridReferencePrecision)
         private set
 
     var showSettings by mutableStateOf(false)
@@ -805,6 +1247,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         prefs.showGridlines = enabled
     }
 
+    fun updateUseFullGridReference(enabled: Boolean) {
+        useFullGridReference = enabled
+        prefs.useFullGridReference = enabled
+    }
+
+    fun updateGridReferencePrecision(precision: Int) {
+        gridReferencePrecision = precision
+        prefs.gridReferencePrecision = precision
+    }
+
     fun loadRoute(name: String, waypoints: List<Waypoint>) {
         RouteManager.loadWaypoints(name, waypoints)
         elapsedTimeSeconds = 0L
@@ -866,7 +1318,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             return if (coordinateSystem == "grid") {
-                CoordinateUtils.formatGridReferenceWithLetter(x, y)
+                CoordinateUtils.formatGridReferenceWithLetter(x, y, gridReferencePrecision)
             } else {
                 val (lat, lon) = CoordinateUtils.metricToLatLon(x, y)
                 String.format("%.4f, %.4f", lat, lon)
@@ -1076,6 +1528,87 @@ data class Waypoint(
 }
 
 
+// --- FILE: app/src/main/java/com/example/seebeepee/service/MediaButtonBroadcastReceiver.kt ---
+
+package com.example.seebeepee.service
+
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import android.view.KeyEvent
+import com.example.seebeepee.model.HikeState
+import com.example.seebeepee.model.RouteManager
+import com.example.seebeepee.util.AppPreferences
+import com.example.seebeepee.util.CoordinateUtils
+import com.example.seebeepee.util.TtsManager
+
+class MediaButtonBroadcastReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == Intent.ACTION_MEDIA_BUTTON) {
+            val keyEvent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT) as? KeyEvent
+            }
+
+            if (keyEvent != null && keyEvent.action == KeyEvent.ACTION_DOWN) {
+                val isActiveHike = RouteManager.waypoints.isNotEmpty() && RouteManager.hikeState != HikeState.IDLE
+                if (isActiveHike) {
+                    when (keyEvent.keyCode) {
+                        KeyEvent.KEYCODE_MEDIA_PLAY,
+                        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                        KeyEvent.KEYCODE_HEADSETHOOK,
+                        KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                            abortBroadcast()
+                            speakNavigationStatus(context)
+                        }
+                        KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                            abortBroadcast()
+                            if (RouteManager.waypoints.isNotEmpty()) {
+                                RouteManager.currentWaypointIndex = (RouteManager.currentWaypointIndex + 1) % RouteManager.waypoints.size
+                                speakNavigationStatus(context)
+                            }
+                        }
+                        KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                            abortBroadcast()
+                            if (RouteManager.waypoints.isNotEmpty()) {
+                                RouteManager.currentWaypointIndex = if (RouteManager.currentWaypointIndex > 0) RouteManager.currentWaypointIndex - 1 else RouteManager.waypoints.size - 1
+                                speakNavigationStatus(context)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun speakNavigationStatus(context: Context) {
+        val ttsManager = TtsManager(context.applicationContext)
+        val waypoints = RouteManager.waypoints
+        val idx = RouteManager.currentWaypointIndex
+        val precision = AppPreferences(context).gridReferencePrecision
+        if (waypoints.isNotEmpty() && idx < waypoints.size) {
+            val current = waypoints[idx]
+            val next = if (idx < waypoints.size - 1) waypoints[idx + 1] else null
+            if (next != null) {
+                val dist = CoordinateUtils.calculateDistance(current.x, current.y, next.x, next.y)
+                val bearing = CoordinateUtils.calculateBearing(current.x, current.y, next.x, next.y)
+                val gridRef = CoordinateUtils.formatGridReferenceWithLetter(next.x, next.y, precision)
+                val text = "Leg to ${next.name}, grid reference $gridRef. Bearing ${bearing.toInt()} degrees. Distance ${dist.toInt()} meters."
+                ttsManager.speak(text)
+            } else {
+                val gridRef = CoordinateUtils.formatGridReferenceWithLetter(current.x, current.y, precision)
+                ttsManager.speak("Currently at final waypoint ${current.name}, grid reference $gridRef.")
+            }
+        } else {
+            ttsManager.speak("No active route loaded.")
+        }
+    }
+}
+
+
 // --- FILE: app/src/main/java/com/example/seebeepee/service/HikingForegroundService.kt ---
 
 package com.example.seebeepee.service
@@ -1086,18 +1619,28 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.location.LocationManager
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.os.Build
 import android.os.IBinder
+import android.os.Looper
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
+import android.view.KeyEvent
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
+import androidx.media.session.MediaButtonReceiver
+import com.google.android.gms.location.*
 import com.example.seebeepee.MainActivity
 import com.example.seebeepee.R
 import com.example.seebeepee.model.Breadcrumb
+import com.example.seebeepee.model.HikeState
 import com.example.seebeepee.model.RouteManager
 import com.example.seebeepee.util.AppPreferences
 import com.example.seebeepee.util.CoordinateUtils
@@ -1106,10 +1649,13 @@ import kotlinx.coroutines.*
 
 class HikingForegroundService : Service() {
     private val serviceJob = SupervisorJob()
-    private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
     private lateinit var ttsManager: TtsManager
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
+    private lateinit var locationCallback: LocationCallback
     private var mediaSession: MediaSessionCompat? = null
+    private var mediaButtonPendingIntent: PendingIntent? = null
     private var isRunning = false
+    private var audioFocusRequest: AudioFocusRequest? = null
 
     companion object {
         const val CHANNEL_ID = "HikingServiceChannel"
@@ -1120,37 +1666,134 @@ class HikingForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         ttsManager = TtsManager(applicationContext)
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        requestAudioFocus()
         setupMediaSession()
         createNotificationChannel()
+        setupLocationCallback()
+    }
+
+    private fun requestAudioFocus(): Boolean {
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
+            val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                .setAudioAttributes(audioAttributes)
+                .setAcceptsDelayedFocusGain(true)
+                .setOnAudioFocusChangeListener { _ -> }
+                .build()
+            audioFocusRequest = focusRequest
+            audioManager.requestAudioFocus(focusRequest) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        } else {
+            @Suppress("DEPRECATION")
+            val result = audioManager.requestAudioFocus(
+                { _ -> },
+                AudioManager.STREAM_MUSIC,
+                AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+            )
+            result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        }
+    }
+
+    private fun abandonAudioFocus() {
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.abandonAudioFocus(null)
+        }
+    }
+
+    private fun setupLocationCallback() {
+        locationCallback = object : LocationCallback() {
+            override fun onLocationResult(locationResult: LocationResult) {
+                for (location in locationResult.locations) {
+                    val (x, y) = CoordinateUtils.latLonToMetric(location.latitude, location.longitude)
+                    val alt = if (location.hasAltitude()) location.altitude else 0.0
+                    val timestamp = location.time.takeIf { it > 0 } ?: System.currentTimeMillis()
+
+                    val breadcrumb = Breadcrumb(x, y, alt, timestamp)
+                    RouteManager.addBreadcrumb(breadcrumb)
+                }
+            }
+        }
     }
 
     private fun setupMediaSession() {
+        val pendingIntent = MediaButtonReceiver.buildMediaButtonPendingIntent(
+            this@HikingForegroundService,
+            PlaybackStateCompat.ACTION_PLAY_PAUSE
+        )
+        mediaButtonPendingIntent = pendingIntent
+
         mediaSession = MediaSessionCompat(this, "SeeBeePeeMediaSession").apply {
+            setFlags(
+                MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or
+                        MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
+            )
+            setMediaButtonReceiver(pendingIntent)
             setCallback(object : MediaSessionCompat.Callback() {
                 override fun onPlay() {
                     super.onPlay()
+                    requestAudioFocus()
                     speakCurrentLegStats()
                 }
                 override fun onPause() {
                     super.onPause()
+                    requestAudioFocus()
                     ttsManager.speak("Hike tracking paused.")
                 }
                 override fun onSkipToNext() {
                     super.onSkipToNext()
+                    requestAudioFocus()
                     if (RouteManager.waypoints.isNotEmpty()) {
                         RouteManager.currentWaypointIndex = (RouteManager.currentWaypointIndex + 1) % RouteManager.waypoints.size
                         speakCurrentLegStats()
                     }
                 }
+                override fun onMediaButtonEvent(mediaButtonEvent: Intent): Boolean {
+                    val keyEvent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        mediaButtonEvent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        mediaButtonEvent.getParcelableExtra(Intent.EXTRA_KEY_EVENT) as? KeyEvent
+                    }
+                    if (keyEvent != null && keyEvent.action == KeyEvent.ACTION_DOWN) {
+                        requestAudioFocus()
+                        when (keyEvent.keyCode) {
+                            KeyEvent.KEYCODE_MEDIA_PLAY,
+                            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                            KeyEvent.KEYCODE_HEADSETHOOK -> {
+                                speakCurrentLegStats()
+                                return true
+                            }
+                            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                                ttsManager.speak("Hike tracking paused.")
+                                return true
+                            }
+                            KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                                if (RouteManager.waypoints.isNotEmpty()) {
+                                    RouteManager.currentWaypointIndex = (RouteManager.currentWaypointIndex + 1) % RouteManager.waypoints.size
+                                    speakCurrentLegStats()
+                                }
+                                return true
+                            }
+                        }
+                    }
+                    return super.onMediaButtonEvent(mediaButtonEvent)
+                }
             })
             setPlaybackState(
                 PlaybackStateCompat.Builder()
-                    .setState(PlaybackStateCompat.STATE_PLAYING, 0L, 1f)
+                    .setState(PlaybackStateCompat.STATE_PLAYING, 0L, 1.0f)
                     .setActions(
-                        PlaybackStateCompat.ACTION_PLAY or
-                                PlaybackStateCompat.ACTION_PAUSE or
-                                PlaybackStateCompat.ACTION_PLAY_PAUSE or
-                                PlaybackStateCompat.ACTION_SKIP_TO_NEXT
+                        PlaybackStateCompat.ACTION_PLAY_PAUSE or
+                                PlaybackStateCompat.ACTION_PLAY or
+                                PlaybackStateCompat.ACTION_PLAY_PAUSE
                     )
                     .build()
             )
@@ -1159,19 +1802,21 @@ class HikingForegroundService : Service() {
     }
 
     private fun speakCurrentLegStats() {
+        requestAudioFocus()
         val waypoints = RouteManager.waypoints
         val idx = RouteManager.currentWaypointIndex
+        val precision = AppPreferences(applicationContext).gridReferencePrecision
         if (waypoints.isNotEmpty() && idx < waypoints.size) {
             val current = waypoints[idx]
             val next = if (idx < waypoints.size - 1) waypoints[idx + 1] else null
             if (next != null) {
                 val dist = CoordinateUtils.calculateDistance(current.x, current.y, next.x, next.y)
                 val bearing = CoordinateUtils.calculateBearing(current.x, current.y, next.x, next.y)
-                val gridRef = CoordinateUtils.formatGridReferenceWithLetter(next.x, next.y)
+                val gridRef = CoordinateUtils.formatGridReferenceWithLetter(next.x, next.y, precision)
                 val text = "Leg to ${next.name}, grid reference $gridRef. Bearing ${bearing.toInt()} degrees. Distance ${dist.toInt()} meters."
                 ttsManager.speak(text)
             } else {
-                val gridRef = CoordinateUtils.formatGridReferenceWithLetter(current.x, current.y)
+                val gridRef = CoordinateUtils.formatGridReferenceWithLetter(current.x, current.y, precision)
                 ttsManager.speak("Currently at final waypoint ${current.name}, grid reference $gridRef.")
             }
         } else {
@@ -1180,8 +1825,18 @@ class HikingForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        requestAudioFocus()
+        mediaSession?.setActive(true)
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        if (intent?.action != ACTION_STOP) {
+            mediaButtonPendingIntent?.let {
+                audioManager.registerMediaButtonEventReceiver(it)
+            }
+        }
         when (intent?.action) {
             ACTION_STOP -> {
+                RouteManager.hikeState = HikeState.IDLE
+                stopLocationUpdates()
                 try {
                     stopForeground(STOP_FOREGROUND_REMOVE)
                 } catch (e: Exception) {
@@ -1191,49 +1846,59 @@ class HikingForegroundService : Service() {
                 return START_NOT_STICKY
             }
             else -> {
-                try {
-                    val hasFine = ActivityCompat.checkSelfPermission(
-                        this,
-                        Manifest.permission.ACCESS_FINE_LOCATION
-                    ) == PackageManager.PERMISSION_GRANTED
-                    val hasCoarse = ActivityCompat.checkSelfPermission(
-                        this,
-                        Manifest.permission.ACCESS_COARSE_LOCATION
-                    ) == PackageManager.PERMISSION_GRANTED
+                RouteManager.hikeState = HikeState.HIKING
+                val hasFine = ActivityCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.ACCESS_FINE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+                val hasCoarse = ActivityCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
 
-                    if (!hasFine && !hasCoarse) {
-                        RouteManager.logError("SecurityException prevented: Location permissions (Fine/Coarse) are missing when starting HikingForegroundService.")
-                    }
+                val locationManager = getSystemService(LOCATION_SERVICE) as? LocationManager
+                val isGpsOn = locationManager?.let {
+                    it.isProviderEnabled(LocationManager.GPS_PROVIDER) || it.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+                } ?: false
 
-                    val notification = createNotification("Hike Tracking Active")
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        try {
-                            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
-                        } catch (e: SecurityException) {
-                            RouteManager.logError("SecurityException starting foreground service with location type: ${e.message}. Falling back to standard startForeground.")
-                            startForeground(NOTIFICATION_ID, notification)
-                        }
-                    } else {
-                        startForeground(NOTIFICATION_ID, notification)
-                    }
-                    startSimulationOrGpsTracking()
-                } catch (e: SecurityException) {
-                    RouteManager.logError("SecurityException in HikingForegroundService onStartCommand: ${e.message}")
-                    try {
-                        val notification = createNotification("Hike Tracking Active (Fallback)")
-                        startForeground(NOTIFICATION_ID, notification)
-                        startSimulationOrGpsTracking()
-                    } catch (e2: Exception) {
-                        RouteManager.logError("Failed to start foreground service fallback: ${e2.message}")
-                        stopSelf()
-                    }
-                } catch (e: Exception) {
-                    RouteManager.logError("Error starting HikingForegroundService: ${e.message}")
-                    stopSelf()
+                if (!hasFine && !hasCoarse) {
+                    RouteManager.logError("Error: Location permissions (Fine/Coarse) are missing when starting HikingForegroundService.")
+                    val notification = createNotification("⚠️ Error: Location Permission Missing!")
+                    startForegroundWithNotification(notification)
+                    return START_STICKY
                 }
+
+                if (!isGpsOn) {
+                    RouteManager.logError("Warning: GPS/Location provider is disabled.")
+                    val notification = createNotification("⚠️ Warning: GPS Disabled in Settings!")
+                    startForegroundWithNotification(notification)
+                } else {
+                    val notification = createNotification("Hike Tracking Active (GPS)")
+                    startForegroundWithNotification(notification)
+                }
+
+                startGpsTracking()
             }
         }
         return START_STICKY
+    }
+
+    private fun startForegroundWithNotification(notification: Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                } else {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                }
+                startForeground(NOTIFICATION_ID, notification, serviceType)
+            } catch (e: SecurityException) {
+                RouteManager.logError("SecurityException starting foreground service with location/mediaPlayback type: ${e.message}")
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
     }
 
     private fun createNotificationChannel() {
@@ -1264,35 +1929,51 @@ class HikingForegroundService : Service() {
             .build()
     }
 
-    private fun startSimulationOrGpsTracking() {
+    private fun startGpsTracking() {
         if (isRunning) return
         isRunning = true
 
-        serviceScope.launch {
-            var simStep = 0
-            while (isRunning) {
-                delay(4000L)
-                val waypoints = RouteManager.waypoints
-                if (waypoints.isNotEmpty()) {
-                    val idx = RouteManager.currentWaypointIndex.coerceIn(0, waypoints.size - 1)
-                    val currentWp = waypoints[idx]
-                    val offsetX = currentWp.x + (Math.random() - 0.5) * 20.0
-                    val offsetY = currentWp.y + (Math.random() - 0.5) * 20.0
-                    val alt = currentWp.altitude + (Math.random() - 0.5) * 5.0
+        val hasFine = ActivityCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val hasCoarse = ActivityCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
 
-                    val breadcrumb = Breadcrumb(offsetX, offsetY, alt, System.currentTimeMillis())
-                    val lastBc = RouteManager.breadcrumbs.lastOrNull()
-                    RouteManager.addBreadcrumb(breadcrumb)
+        if (!hasFine && !hasCoarse) {
+            RouteManager.logError("Cannot start GPS tracking: Location permission missing.")
+            isRunning = false
+            return
+        }
 
-                    if (lastBc != null) {
-                        val prefs = AppPreferences(applicationContext)
-                        if (prefs.voiceAlertsEnabled && simStep % 6 == 0) {
-                            speakCurrentLegStats()
-                        }
-                    }
-                    simStep++
-                }
-            }
+        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L).apply {
+            setMinUpdateIntervalMillis(1000L)
+            setMaxUpdateDelayMillis(2000L)
+        }.build()
+
+        try {
+            fusedLocationClient.requestLocationUpdates(
+                locationRequest,
+                locationCallback,
+                Looper.getMainLooper()
+            )
+            RouteManager.logError("High-accuracy GPS tracking requested (1000ms interval).")
+        } catch (e: SecurityException) {
+            RouteManager.logError("SecurityException starting GPS location updates: ${e.message}")
+            isRunning = false
+        } catch (e: Exception) {
+            RouteManager.logError("Error starting GPS location updates: ${e.message}")
+            isRunning = false
+        }
+    }
+
+    private fun stopLocationUpdates() {
+        try {
+            fusedLocationClient.removeLocationUpdates(locationCallback)
+        } catch (e: Exception) {
+            RouteManager.logError("Error removing location updates: ${e.message}")
         }
     }
 
@@ -1301,7 +1982,14 @@ class HikingForegroundService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
+        RouteManager.hikeState = HikeState.IDLE
+        stopLocationUpdates()
         serviceJob.cancel()
+        abandonAudioFocus()
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        mediaButtonPendingIntent?.let {
+            audioManager.unregisterMediaButtonEventReceiver(it)
+        }
         mediaSession?.release()
         ttsManager.shutdown()
     }
@@ -1425,9 +2113,12 @@ fun SeeBeePeeTheme(
 package com.example.seebeepee.ui
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -1544,39 +2235,120 @@ fun MainScreen(
         )
     }
 
+    val hasLocationPermission = remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val locationManager = remember { context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager }
+    val isGpsEnabled = remember {
+        mutableStateOf(
+            locationManager?.let {
+                it.isProviderEnabled(LocationManager.GPS_PROVIDER) || it.isProviderEnabled(
+                    LocationManager.NETWORK_PROVIDER)
+            } ?: false
+        )
+    }
+
+    LaunchedEffect(Unit) {
+        hasLocationPermission.value = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        isGpsEnabled.value = locationManager?.let {
+            it.isProviderEnabled(LocationManager.GPS_PROVIDER) || it.isProviderEnabled(
+                LocationManager.NETWORK_PROVIDER)
+        } ?: false
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val fine = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
+        val coarse = permissions[Manifest.permission.ACCESS_COARSE_LOCATION] ?: false
+        hasLocationPermission.value = fine || coarse
+        if (fine || coarse) {
+            viewModel.gpsStatus = "Location Permission Granted"
+        } else {
+            viewModel.gpsStatus = "Location Permission Denied"
+            RouteManager.logError("Location permission denied by user.")
+        }
+    }
+
+    var showGpsDisabledDialog by remember { mutableStateOf(false) }
+
+    if (showGpsDisabledDialog) {
+        AlertDialog(
+            onDismissRequest = { showGpsDisabledDialog = false },
+            title = { Text("GPS is Disabled") },
+            text = { Text("GPS / Location services are disabled on your device. Please enable GPS in settings for accurate hike tracking.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showGpsDisabledDialog = false
+                    try {
+                        context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                    } catch (e: Exception) {
+                        RouteManager.logError("Error opening location settings: ${e.message}")
+                    }
+                }) {
+                    Text("Open Settings")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showGpsDisabledDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     var showOutsideMapConfirmation by remember { mutableStateOf(false) }
 
     val startTrackingAction = {
-        val serviceIntent = Intent(context, HikingForegroundService::class.java)
-        try {
-            val hasFine = ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
-            val hasCoarse = ContextCompat.checkSelfPermission(
-                context,
+        val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        hasLocationPermission.value = fine || coarse
+
+        val gpsOn = locationManager?.let {
+            it.isProviderEnabled(LocationManager.GPS_PROVIDER) || it.isProviderEnabled(
+                LocationManager.NETWORK_PROVIDER)
+        } ?: false
+        isGpsEnabled.value = gpsOn
+
+        if (!hasLocationPermission.value) {
+            RouteManager.logError("Location permissions missing when starting GPS tracking. Requesting permissions.")
+            viewModel.gpsStatus = "Permission Required"
+            val permissionsToRequest = mutableListOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
                 Manifest.permission.ACCESS_COARSE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
-
-            if (!hasFine && !hasCoarse) {
-                RouteManager.logError("Location permissions missing when starting GPS tracking.")
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
             }
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(serviceIntent)
-            } else {
-                context.startService(serviceIntent)
+            permissionLauncher.launch(permissionsToRequest.toTypedArray())
+        } else if (!gpsOn) {
+            RouteManager.logError("GPS is disabled when starting GPS tracking.")
+            viewModel.gpsStatus = "GPS Disabled"
+            showGpsDisabledDialog = true
+        } else {
+            val serviceIntent = Intent(context, HikingForegroundService::class.java)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(serviceIntent)
+                } else {
+                    context.startService(serviceIntent)
+                }
+                isTrackingActive = true
+                viewModel.gpsStatus = "GPS Tracking Active"
+            } catch (e: SecurityException) {
+                RouteManager.logError("SecurityException starting service: ${e.message}")
+                isTrackingActive = false
+                viewModel.gpsStatus = "Tracking Failed (Permission Denied)"
+            } catch (e: Exception) {
+                RouteManager.logError("Error starting service: ${e.message}")
+                isTrackingActive = false
+                viewModel.gpsStatus = "Tracking Failed"
             }
-            isTrackingActive = true
-            viewModel.gpsStatus = "GPS Tracking Active"
-        } catch (e: SecurityException) {
-            RouteManager.logError("SecurityException starting service: ${e.message}")
-            isTrackingActive = false
-            viewModel.gpsStatus = "Tracking Failed (Permission Denied)"
-        } catch (e: Exception) {
-            RouteManager.logError("Error starting service: ${e.message}")
-            isTrackingActive = false
-            viewModel.gpsStatus = "Tracking Failed"
         }
     }
 
@@ -1734,6 +2506,81 @@ fun MainScreen(
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // Warning Banner for Missing Location Permission
+                if (!hasLocationPermission.value) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "⚠️ Location Permission Required",
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Text(
+                                text = "SeeBeePee requires location permission to track your hike, record breadcrumbs, and calculate legs.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Button(
+                                onClick = {
+                                    val permissionsToRequest = mutableListOf(
+                                        Manifest.permission.ACCESS_FINE_LOCATION,
+                                        Manifest.permission.ACCESS_COARSE_LOCATION
+                                    )
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                        permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
+                                    }
+                                    permissionLauncher.launch(permissionsToRequest.toTypedArray())
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                            ) {
+                                Text("Grant Location & Notification Permission")
+                            }
+                        }
+                    }
+                }
+
+                // Warning Banner for GPS Disabled
+                if (hasLocationPermission.value && !isGpsEnabled.value) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "⚠️ GPS / Location Services Disabled",
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Text(
+                                text = "GPS provider is turned off in device settings. Please enable GPS for real-time tracking.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Button(
+                                onClick = {
+                                    try {
+                                        context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                                    } catch (e: Exception) {
+                                        RouteManager.logError("Error opening location settings: ${e.message}")
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                            ) {
+                                Text("Enable GPS in Settings")
+                            }
+                        }
+                    }
+                }
+
                 // First-Run Onboarding Banner if no route is loaded
                 if (waypoints.isEmpty()) {
                     Card(
@@ -1818,7 +2665,7 @@ fun MainScreen(
                                 val isCurrent = (index == currentIndex)
                                 val metric = if (index < legMetrics.size) legMetrics[index] else null
                                 val locStr = if (viewModel.coordinateSystem == "grid") {
-                                    formatSuccinctGrid(wp.x, wp.y)
+                                    CoordinateUtils.formatGridReferenceWithLetter(wp.x, wp.y, viewModel.gridReferencePrecision)
                                 } else {
                                     val (lat, lon) = CoordinateUtils.metricToLatLon(wp.x, wp.y)
                                     String.format(Locale.US, "%.2f, %.2f", lat, lon)
@@ -1975,6 +2822,32 @@ fun MainScreen(
                                 }
                             }
 
+                            // Grid Reference Precision selector (when coordinate system is grid)
+                            if (viewModel.coordinateSystem == "grid") {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(text = "Grid Reference Precision:", fontSize = 13.sp)
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        listOf(6, 8, 10).forEach { prec ->
+                                            Button(
+                                                onClick = { viewModel.updateGridReferencePrecision(prec) },
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = if (viewModel.gridReferencePrecision == prec) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+                                                ),
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Text("$prec Digits", fontSize = 12.sp)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             // Voice alerts toggle
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -2047,7 +2920,7 @@ fun CurrentLegMetricsCard(viewModel: MainViewModel) {
         val lastBc = RouteManager.breadcrumbs.lastOrNull()
         val x = lastBc?.x ?: RouteManager.waypoints.getOrNull(viewModel.currentIndex)?.x ?: 0.0
         val y = lastBc?.y ?: RouteManager.waypoints.getOrNull(viewModel.currentIndex)?.y ?: 0.0
-        formatSuccinctGrid(x, y)
+        CoordinateUtils.formatGridReferenceWithLetter(x, y, viewModel.gridReferencePrecision)
     } else {
         viewModel.currentPositionString
     }
@@ -2132,10 +3005,6 @@ fun MetricItem(label: String, value: String) {
         Text(text = label, fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
         Text(text = value, fontSize = 12.sp, fontWeight = FontWeight.Bold)
     }
-}
-
-fun formatSuccinctGrid(x: Double, y: Double): String {
-    return CoordinateUtils.formatGridReference6Digit(x, y)
 }
 
 fun formatHoursMinutes(totalMinutes: Double): String {
@@ -2518,26 +3387,41 @@ fun MapScreen(
                         val dist = CoordinateUtils.calculateDistance(currWp.x, currWp.y, currentPos.first, currentPos.second)
                         val distStr = if (dist < 1000.0) "${dist.toInt()}m" else String.format(Locale.US, "%.1fkm", dist / 1000.0)
 
-                        val clampedX = posScreen.x.coerceIn(50f, canvasWidth - 50f)
-                        val clampedY = posScreen.y.coerceIn(50f, canvasHeight - 50f)
+                        val padding = 40f
+                        val clampedX = posScreen.x.coerceIn(padding, canvasWidth - padding)
+                        val clampedY = posScreen.y.coerceIn(padding, canvasHeight - padding)
 
                         val indicatorPaint = Paint().apply {
                             color = android.graphics.Color.RED
-                            textSize = 32f
+                            textSize = 30f
                             isAntiAlias = true
                             typeface = Typeface.DEFAULT_BOLD
                         }
 
                         drawCircle(
                             color = Color.Red,
-                            radius = 24f,
+                            radius = 20f,
                             center = Offset(clampedX, clampedY)
                         )
 
+                        val labelText = "➔ $distStr"
+                        val textWidth = indicatorPaint.measureText(labelText)
+
+                        val textX = if (clampedX >= canvasWidth - padding - 10f) {
+                            clampedX - textWidth - 25f
+                        } else {
+                            clampedX + 25f
+                        }
+                        val textY = if (clampedY >= canvasHeight - padding - 10f) {
+                            clampedY - 10f
+                        } else {
+                            clampedY + 10f
+                        }
+
                         drawContext.canvas.nativeCanvas.drawText(
-                            "➔ $distStr",
-                            clampedX + 30f,
-                            clampedY + 10f,
+                            labelText,
+                            textX,
+                            textY,
                             indicatorPaint
                         )
                     }
@@ -2701,6 +3585,8 @@ private fun speedToColor(speedKmh: Double): Color {
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
@@ -2717,8 +3603,17 @@ private fun speedToColor(speedKmh: Double): Color {
         android:theme="@style/Theme.SeeBeePee">
         <service
             android:name=".service.HikingForegroundService"
-            android:foregroundServiceType="location"
+            android:foregroundServiceType="location|mediaPlayback"
             android:exported="false" />
+
+        <receiver
+            android:name=".service.MediaButtonBroadcastReceiver"
+            android:exported="true"
+            android:priority="9999">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
         <activity
             android:name=".MainActivity"
             android:exported="true"

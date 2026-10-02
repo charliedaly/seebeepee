@@ -12,14 +12,19 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.location.LocationManager
 import android.media.AudioAttributes
+import android.media.AudioFormat
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.media.AudioTrack
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import android.view.KeyEvent
+import android.widget.Toast
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.media.session.MediaButtonReceiver
@@ -27,11 +32,13 @@ import com.google.android.gms.location.*
 import com.example.seebeepee.MainActivity
 import com.example.seebeepee.R
 import com.example.seebeepee.model.Breadcrumb
+import com.example.seebeepee.model.HikeState
 import com.example.seebeepee.model.RouteManager
 import com.example.seebeepee.util.AppPreferences
 import com.example.seebeepee.util.CoordinateUtils
 import com.example.seebeepee.util.TtsManager
 import kotlinx.coroutines.*
+import kotlin.math.sin
 
 class HikingForegroundService : Service() {
     private val serviceJob = SupervisorJob()
@@ -39,9 +46,13 @@ class HikingForegroundService : Service() {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
     private var mediaSession: MediaSessionCompat? = null
-    private var mediaButtonPendingIntent: PendingIntent? = null
     private var isRunning = false
     private var audioFocusRequest: AudioFocusRequest? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // Inaudible background audio stream variables
+    private var audioTrack: AudioTrack? = null
+    private var audioStreamJob: Job? = null
 
     companion object {
         const val CHANNEL_ID = "HikingServiceChannel"
@@ -53,35 +64,58 @@ class HikingForegroundService : Service() {
         super.onCreate()
         ttsManager = TtsManager(applicationContext)
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-        requestAudioFocus()
         setupMediaSession()
+        requestAudioFocus()
+        startInaudibleAudioStream()
         createNotificationChannel()
         setupLocationCallback()
     }
 
+    private fun showToast(message: String) {
+        mainHandler.post {
+            Toast.makeText(applicationContext, message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun requestAudioFocus(): Boolean {
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val audioAttributes = AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
-            val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+
+            val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(audioAttributes)
-                .setAcceptsDelayedFocusGain(true)
-                .setOnAudioFocusChangeListener { _ -> }
+                .setAcceptsDelayedFocusGain(false)
+                .setOnAudioFocusChangeListener { focusChange ->
+                    when (focusChange) {
+                        AudioManager.AUDIOFOCUS_GAIN -> {
+                            mediaSession?.setActive(true)
+                        }
+                        else -> {}
+                    }
+                }
                 .build()
             audioFocusRequest = focusRequest
-            audioManager.requestAudioFocus(focusRequest) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            val result = audioManager.requestAudioFocus(focusRequest)
+            result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         } else {
             @Suppress("DEPRECATION")
             val result = audioManager.requestAudioFocus(
                 { _ -> },
                 AudioManager.STREAM_MUSIC,
-                AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                AudioManager.AUDIOFOCUS_GAIN
             )
             result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         }
+
+        if (granted) {
+            showToast("Audio Focus: GRANTED")
+        } else {
+            showToast("Audio Focus: DENIED!")
+        }
+        return granted
     }
 
     private fun abandonAudioFocus() {
@@ -92,6 +126,67 @@ class HikingForegroundService : Service() {
             @Suppress("DEPRECATION")
             audioManager.abandonAudioFocus(null)
         }
+    }
+
+    private fun startInaudibleAudioStream() {
+        if (audioTrack != null) return
+        try {
+            val sampleRate = 44100
+            val bufferSize = AudioTrack.getMinBufferSize(
+                sampleRate,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
+
+            audioTrack = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build()
+                )
+                .setBufferSizeInBytes(bufferSize)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+
+            val toneBuffer = ByteArray(bufferSize)
+            val frequency = 19000.0
+            for (i in toneBuffer.indices step 2) {
+                val sampleIndex = i / 2
+                val angle = sampleIndex * 2.0 * Math.PI * frequency / sampleRate
+                val sample = (sin(angle) * 100.0).toInt().toShort()
+                toneBuffer[i] = (sample.toInt() and 0xff).toByte()
+                toneBuffer[i + 1] = ((sample.toInt() shr 8) and 0xff).toByte()
+            }
+
+            audioTrack?.play()
+
+            audioStreamJob = CoroutineScope(Dispatchers.IO + serviceJob).launch {
+                while (isActive && audioTrack != null) {
+                    audioTrack?.write(toneBuffer, 0, toneBuffer.size)
+                    delay(300L)
+                }
+            }
+        } catch (e: Exception) {
+            RouteManager.logError("Error starting inaudible audio stream: ${e.message}")
+        }
+    }
+
+    private fun stopInaudibleAudioStream() {
+        audioStreamJob?.cancel()
+        audioStreamJob = null
+        try {
+            audioTrack?.stop()
+            audioTrack?.release()
+            audioTrack = null
+        } catch (e: Exception) { }
     }
 
     private fun setupLocationCallback() {
@@ -110,88 +205,87 @@ class HikingForegroundService : Service() {
     }
 
     private fun setupMediaSession() {
-        val pendingIntent = MediaButtonReceiver.buildMediaButtonPendingIntent(
-            this@HikingForegroundService,
-            PlaybackStateCompat.ACTION_PLAY_PAUSE
+        val mediaButtonIntent = Intent(Intent.ACTION_MEDIA_BUTTON).apply {
+            setClass(this@HikingForegroundService, MediaButtonReceiver::class.java)
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            this,
+            0,
+            mediaButtonIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        mediaButtonPendingIntent = pendingIntent
 
-        mediaSession = MediaSessionCompat(this, "SeeBeePeeMediaSession").apply {
-            setFlags(
-                MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or
-                        MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
-            )
-            setMediaButtonReceiver(pendingIntent)
-            setCallback(object : MediaSessionCompat.Callback() {
-                override fun onPlay() {
-                    super.onPlay()
-                    requestAudioFocus()
-                    speakCurrentLegStats()
+        val session = MediaSessionCompat(this, "SeeBeePeeMediaSession")
+        session.setFlags(
+            MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or
+                    MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
+        )
+        session.setMediaButtonReceiver(pendingIntent)
+
+        session.setMetadata(
+            MediaMetadataCompat.Builder()
+                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, "Hiking Navigation")
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, "SeeBeePee")
+                .build()
+        )
+
+        session.setPlaybackState(
+            PlaybackStateCompat.Builder()
+                .setState(PlaybackStateCompat.STATE_PLAYING, 0L, 1.0f)
+                .setActions(
+                    PlaybackStateCompat.ACTION_PLAY or
+                            PlaybackStateCompat.ACTION_PAUSE or
+                            PlaybackStateCompat.ACTION_PLAY_PAUSE or
+                            PlaybackStateCompat.ACTION_SKIP_TO_NEXT
+                )
+                .build()
+        )
+
+        session.setCallback(object : MediaSessionCompat.Callback() {
+            override fun onMediaButtonEvent(mediaButtonEvent: Intent): Boolean {
+                val keyEvent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    mediaButtonEvent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    mediaButtonEvent.getParcelableExtra(Intent.EXTRA_KEY_EVENT) as? KeyEvent
                 }
-                override fun onPause() {
-                    super.onPause()
+
+                if (keyEvent != null && keyEvent.action == KeyEvent.ACTION_DOWN) {
+                    showToast("Key Down: ${keyEvent.keyCode}")
                     requestAudioFocus()
-                    ttsManager.speak("Hike tracking paused.")
-                }
-                override fun onSkipToNext() {
-                    super.onSkipToNext()
-                    requestAudioFocus()
-                    if (RouteManager.waypoints.isNotEmpty()) {
-                        RouteManager.currentWaypointIndex = (RouteManager.currentWaypointIndex + 1) % RouteManager.waypoints.size
-                        speakCurrentLegStats()
-                    }
-                }
-                override fun onMediaButtonEvent(mediaButtonEvent: Intent): Boolean {
-                    val keyEvent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        mediaButtonEvent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        mediaButtonEvent.getParcelableExtra(Intent.EXTRA_KEY_EVENT) as? KeyEvent
-                    }
-                    if (keyEvent != null && keyEvent.action == KeyEvent.ACTION_DOWN) {
-                        requestAudioFocus()
-                        when (keyEvent.keyCode) {
-                            KeyEvent.KEYCODE_MEDIA_PLAY,
-                            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
-                            KeyEvent.KEYCODE_HEADSETHOOK -> {
+
+                    when (keyEvent.keyCode) {
+                        KeyEvent.KEYCODE_MEDIA_PLAY,
+                        KeyEvent.KEYCODE_MEDIA_PAUSE,
+                        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                        KeyEvent.KEYCODE_HEADSETHOOK -> {
+                            speakCurrentLegStats()
+                            return true
+                        }
+                        KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                            if (RouteManager.waypoints.isNotEmpty()) {
+                                RouteManager.currentWaypointIndex = (RouteManager.currentWaypointIndex + 1) % RouteManager.waypoints.size
                                 speakCurrentLegStats()
-                                return true
                             }
-                            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
-                                ttsManager.speak("Hike tracking paused.")
-                                return true
-                            }
-                            KeyEvent.KEYCODE_MEDIA_NEXT -> {
-                                if (RouteManager.waypoints.isNotEmpty()) {
-                                    RouteManager.currentWaypointIndex = (RouteManager.currentWaypointIndex + 1) % RouteManager.waypoints.size
-                                    speakCurrentLegStats()
-                                }
-                                return true
-                            }
+                            return true
                         }
                     }
-                    return super.onMediaButtonEvent(mediaButtonEvent)
                 }
-            })
-            setPlaybackState(
-                PlaybackStateCompat.Builder()
-                    .setState(PlaybackStateCompat.STATE_PLAYING, 0L, 1.0f)
-                    .setActions(
-                        PlaybackStateCompat.ACTION_PLAY_PAUSE or
-                                PlaybackStateCompat.ACTION_PLAY or
-                                PlaybackStateCompat.ACTION_PLAY_PAUSE
-                    )
-                    .build()
-            )
-            isActive = true
-        }
+                return super.onMediaButtonEvent(mediaButtonEvent)
+            }
+        })
+
+        session.setActive(true)
+        mediaSession = session
     }
 
     private fun speakCurrentLegStats() {
         requestAudioFocus()
+
         val waypoints = RouteManager.waypoints
         val idx = RouteManager.currentWaypointIndex
         val precision = AppPreferences(applicationContext).gridReferencePrecision
+
         if (waypoints.isNotEmpty() && idx < waypoints.size) {
             val current = waypoints[idx]
             val next = if (idx < waypoints.size - 1) waypoints[idx + 1] else null
@@ -211,16 +305,15 @@ class HikingForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        requestAudioFocus()
-        mediaSession?.setActive(true)
-        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        if (intent?.action != ACTION_STOP) {
-            mediaButtonPendingIntent?.let {
-                audioManager.registerMediaButtonEventReceiver(it)
-            }
+        if (intent != null) {
+            mediaSession?.let { MediaButtonReceiver.handleIntent(it, intent) }
         }
+
+        requestAudioFocus()
+
         when (intent?.action) {
             ACTION_STOP -> {
+                RouteManager.hikeState = HikeState.IDLE
                 stopLocationUpdates()
                 try {
                     stopForeground(STOP_FOREGROUND_REMOVE)
@@ -231,6 +324,7 @@ class HikingForegroundService : Service() {
                 return START_NOT_STICKY
             }
             else -> {
+                RouteManager.hikeState = HikeState.HIKING
                 val hasFine = ActivityCompat.checkSelfPermission(
                     this,
                     Manifest.permission.ACCESS_FINE_LOCATION
@@ -246,19 +340,22 @@ class HikingForegroundService : Service() {
                 } ?: false
 
                 if (!hasFine && !hasCoarse) {
-                    RouteManager.logError("Error: Location permissions (Fine/Coarse) are missing when starting HikingForegroundService.")
                     val notification = createNotification("⚠️ Error: Location Permission Missing!")
                     startForegroundWithNotification(notification)
+                    ttsManager.speak("Error. Location permissions are missing.")
                     return START_STICKY
                 }
 
                 if (!isGpsOn) {
-                    RouteManager.logError("Warning: GPS/Location provider is disabled.")
                     val notification = createNotification("⚠️ Warning: GPS Disabled in Settings!")
                     startForegroundWithNotification(notification)
+                    ttsManager.speak("Warning. GPS is disabled in settings.")
                 } else {
                     val notification = createNotification("Hike Tracking Active (GPS)")
                     startForegroundWithNotification(notification)
+                    mainHandler.postDelayed({
+                        speakCurrentLegStats()
+                    }, 800L)
                 }
 
                 startGpsTracking()
@@ -270,14 +367,9 @@ class HikingForegroundService : Service() {
     private fun startForegroundWithNotification(notification: Notification) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
-                val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-                } else {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-                }
+                val serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
                 startForeground(NOTIFICATION_ID, notification, serviceType)
             } catch (e: SecurityException) {
-                RouteManager.logError("SecurityException starting foreground service with location/mediaPlayback type: ${e.message}")
                 startForeground(NOTIFICATION_ID, notification)
             }
         } else {
@@ -327,7 +419,6 @@ class HikingForegroundService : Service() {
         ) == PackageManager.PERMISSION_GRANTED
 
         if (!hasFine && !hasCoarse) {
-            RouteManager.logError("Cannot start GPS tracking: Location permission missing.")
             isRunning = false
             return
         }
@@ -343,12 +434,7 @@ class HikingForegroundService : Service() {
                 locationCallback,
                 Looper.getMainLooper()
             )
-            RouteManager.logError("High-accuracy GPS tracking requested (1000ms interval).")
-        } catch (e: SecurityException) {
-            RouteManager.logError("SecurityException starting GPS location updates: ${e.message}")
-            isRunning = false
         } catch (e: Exception) {
-            RouteManager.logError("Error starting GPS location updates: ${e.message}")
             isRunning = false
         }
     }
@@ -356,9 +442,7 @@ class HikingForegroundService : Service() {
     private fun stopLocationUpdates() {
         try {
             fusedLocationClient.removeLocationUpdates(locationCallback)
-        } catch (e: Exception) {
-            RouteManager.logError("Error removing location updates: ${e.message}")
-        }
+        } catch (e: Exception) { }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -366,13 +450,11 @@ class HikingForegroundService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
+        RouteManager.hikeState = HikeState.IDLE
         stopLocationUpdates()
         serviceJob.cancel()
         abandonAudioFocus()
-        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        mediaButtonPendingIntent?.let {
-            audioManager.unregisterMediaButtonEventReceiver(it)
-        }
+        stopInaudibleAudioStream()
         mediaSession?.release()
         ttsManager.shutdown()
     }

@@ -10,6 +10,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.seebeepee.model.Hike
 import com.example.seebeepee.model.HikeState
 import com.example.seebeepee.model.RouteManager
 import com.example.seebeepee.model.Waypoint
@@ -55,6 +56,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var nearMissThreshold by mutableDoubleStateOf(prefs.nearMissThreshold)
         private set
+    var proximityThreshold by mutableDoubleStateOf(prefs.proximityThreshold)
+        private set
 
     var showWaypointName by mutableStateOf(prefs.showWaypointName)
         private set
@@ -82,6 +85,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var isHikeActive by mutableStateOf(prefs.isHikeActive || RouteManager.hikeState == HikeState.HIKING)
         private set
 
+    val currentHike: Hike?
+        get() = RouteManager.currentHike
+
     init {
         if (RouteManager.waypoints.isEmpty()) {
             val loaded = RouteManager.loadSavedRoute(prefs, getApplication())
@@ -96,7 +102,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             while (true) {
                 delay(1000L)
-                elapsedTimeSeconds++
+                val hike = RouteManager.currentHike
+                if (hike != null && RouteManager.hikeState == HikeState.HIKING) {
+                    elapsedTimeSeconds = (System.currentTimeMillis() - hike.startTime) / 1000L
+                } else if (RouteManager.hikeState != HikeState.HIKING) {
+                    elapsedTimeSeconds = 0L
+                }
             }
         }
     }
@@ -173,6 +184,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun updateArrivalThreshold(threshold: Double) {
         arrivalThreshold = threshold
         prefs.arrivalThreshold = threshold
+    }
+
+    fun updateProximityThreshold(threshold: Double) {
+        proximityThreshold = threshold
+        prefs.proximityThreshold = threshold
     }
 
     fun updateNearMissThreshold(threshold: Double) {

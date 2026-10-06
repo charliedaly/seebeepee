@@ -213,5 +213,18 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                 climbPenalty = prefs.climbPenalty
             )
         }
+
+        fun generateProximityMessage(
+            target: com.example.seebeepee.model.Waypoint,
+            dist: Double,
+            relativeBearingStr: String
+        ): String {
+            val base = "${target.name} is ${dist.roundToInt()} m away at $relativeBearingStr degrees."
+            return if (target.description.isNotBlank()) {
+                "$base ${target.description}"
+            } else {
+                base
+            }
+        }
     }
 }

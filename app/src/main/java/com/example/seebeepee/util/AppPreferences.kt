@@ -63,6 +63,10 @@ class AppPreferences(context: Context) {
         get() = prefs.getFloat("near_miss_threshold", 40.0f).toDouble()
         set(value) = prefs.edit().putFloat("near_miss_threshold", value.toFloat()).apply()
 
+    var proximityThreshold: Double
+        get() = prefs.getFloat("proximity_threshold", 100.0f).toDouble()
+        set(value) = prefs.edit().putFloat("proximity_threshold", value.toFloat()).apply()
+
     var voiceAlertsEnabled: Boolean
         get() = prefs.getBoolean("voice_alerts_enabled", true)
         set(value) = prefs.edit().putBoolean("voice_alerts_enabled", value).apply()
@@ -106,4 +110,9 @@ class AppPreferences(context: Context) {
     var isHikeActive: Boolean
         get() = prefs.getBoolean("is_hike_active", false)
         set(value) = prefs.edit().putBoolean("is_hike_active", value).apply()
+
+    // Add inside AppPreferences.kt:
+    var currentHikeIndex: Int
+        get() = prefs.getInt("current_hike_index", 0)
+        set(value) = prefs.edit().putInt("current_hike_index", value).apply()
 }

@@ -756,6 +756,16 @@ fun MainScreen(
                             }
 
                             Column {
+                                Text(text = "Proximity Alert Threshold: ${viewModel.proximityThreshold.toInt()}m", fontSize = 13.sp)
+                                Slider(
+                                    value = viewModel.proximityThreshold.toFloat(),
+                                    onValueChange = { viewModel.updateProximityThreshold(it.toDouble()) },
+                                    valueRange = 20f..300f,
+                                    steps = 280
+                                )
+                            }
+
+                            Column {
                                 Text(text = "Near-Miss Threshold: ${viewModel.nearMissThreshold.toInt()}m", fontSize = 13.sp)
                                 Slider(
                                     value = viewModel.nearMissThreshold.toFloat(),
@@ -785,7 +795,7 @@ fun CurrentLegMetricsCard(viewModel: MainViewModel) {
     val targetWp = currentLeg?.toWaypoint
 
     val posStr = if (viewModel.coordinateSystem == "grid") {
-        val lastBc = RouteManager.breadcrumbs.lastOrNull()
+        val lastBc = viewModel.currentHike?.breadcrumbs?.lastOrNull()
         val x = lastBc?.x ?: RouteManager.waypoints.getOrNull(viewModel.currentIndex)?.x ?: 0.0
         val y = lastBc?.y ?: RouteManager.waypoints.getOrNull(viewModel.currentIndex)?.y ?: 0.0
         CoordinateUtils.formatGridReferenceWithLetter(x, y, viewModel.gridReferencePrecision)

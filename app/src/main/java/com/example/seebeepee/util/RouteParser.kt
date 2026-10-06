@@ -53,7 +53,9 @@ object RouteParser {
     }
     /**
      * Parses CSV route content into a list of Waypoints.
-     * Supports columns: grid_ref/grid/location, latitude/lat, longitude/lon, altitude/alt/elevation/ele, name/title.
+     * Supports columns: grid_ref/grid/location, latitude/lat, longitude/lon, altitude/alt/elevation/ele, name/title,
+     * threshold/reach_threshold/radius, description/desc/waypoint_desc/waypoint_description/notes/comments,
+     * leg_description/leg_desc/leg_notes/leg_comments.
      */
     fun parseCsv(csvContent: String): List<Waypoint> {
         val waypoints = mutableListOf<Waypoint>()
@@ -71,6 +73,8 @@ object RouteParser {
         val lonIdx = headers.indexOfFirst { it in listOf("longitude", "lon") }
         val altIdx = headers.indexOfFirst { it in listOf("altitude", "alt", "elevation", "ele") }
         val thresholdIdx = headers.indexOfFirst { it in listOf("threshold", "reach_threshold", "radius") }
+        val descIdx = headers.indexOfFirst { it in listOf("description", "desc", "waypoint_desc", "waypoint_description", "notes", "comments") }
+        val legDescIdx = headers.indexOfFirst { it in listOf("leg_description", "leg_desc", "leg_notes", "leg_comments") }
 
         for (i in 1 until lines.size) {
             val line = lines[i].trim()
@@ -97,13 +101,25 @@ object RouteParser {
                 null
             }
 
+            val description = if (descIdx >= 0 && descIdx < tokens.size) {
+                tokens[descIdx].trim().removeSurrounding("\"", "\"")
+            } else {
+                ""
+            }
+
+            val legDescription = if (legDescIdx >= 0 && legDescIdx < tokens.size) {
+                tokens[legDescIdx].trim().removeSurrounding("\"", "\"")
+            } else {
+                ""
+            }
+
             val waypoint = if (gridIdx >= 0 && gridIdx < tokens.size && tokens[gridIdx].isNotBlank()) {
                 val gridRef = tokens[gridIdx].trim().removeSurrounding("\"", "\"")
-                Waypoint.fromGridReference(name, gridRef, alt, threshold)
+                Waypoint.fromGridReference(name, gridRef, alt, threshold, description, legDescription)
             } else if (latIdx >= 0 && lonIdx >= 0 && latIdx < tokens.size && lonIdx < tokens.size) {
                 val lat = tokens[latIdx].trim().removeSurrounding("\"", "\"").toDoubleOrNull() ?: 0.0
                 val lon = tokens[lonIdx].trim().removeSurrounding("\"", "\"").toDoubleOrNull() ?: 0.0
-                Waypoint.fromLatLon(name, lat, lon, alt, threshold)
+                Waypoint.fromLatLon(name, lat, lon, alt, threshold, description, legDescription)
             } else {
                 continue
             }

@@ -430,6 +430,22 @@ object CoordinateUtils {
     }
 
     /**
+     * Computes relative bearing from hiker movement bearing bHiker to target bearing bTarget
+     * (bTarget - bHiker, normalized to [-180.0, 180.0] degrees).
+     */
+    fun computeRelativeBearing(bHiker: Double, bTarget: Double): Double {
+        return normalizeAngle180(bTarget - bHiker)
+    }
+
+    /**
+     * Formats relative bearing with an explicit sign if positive (e.g., "+15", "-20", "0").
+     */
+    fun formatRelativeBearing(relativeBearing: Double): String {
+        val rounded = relativeBearing.roundToInt()
+        return if (rounded > 0) "+$rounded" else rounded.toString()
+    }
+
+    /**
      * Computes movement bearing by looking back along recorded breadcrumbs until cumulative distance
      * exceeds [loopbackDistanceMeters] (default 10 meters).
      * Returns null if fewer than 2 breadcrumbs exist or if movement distance is zero.

@@ -39,6 +39,7 @@ import com.example.seebeepee.util.HeadingSmoother
 import com.example.seebeepee.util.PersistenceGatekeeper
 import com.example.seebeepee.util.TtsManager
 import kotlinx.coroutines.*
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 class HikingForegroundService : Service() {
@@ -214,6 +215,7 @@ class HikingForegroundService : Service() {
                     RouteManager.addBreadcrumb(breadcrumb)
 
                     checkWaypointAdvancement()
+                    checkProximityAlert()
                     checkCourseCorrectionAlert()
                 }
             }
@@ -229,6 +231,7 @@ class HikingForegroundService : Service() {
         if (result.advanced) {
             RouteManager.currentWaypointIndex = result.newIndex
             persistenceGatekeeper?.reset()
+            RouteManager.lastProximityAlertWaypointIndex = -1
             RouteManager.logError("Auto-advanced waypoint to index ${result.newIndex}: ${result.reachedWaypoint?.name}. Reason: ${result.reason}")
 
             result.ttsAnnouncement?.let { announcement ->
@@ -240,55 +243,34 @@ class HikingForegroundService : Service() {
 
     private fun checkCourseCorrectionAlert() {
         if (RouteManager.hikeState != HikeState.HIKING) return
-
+        val hike = RouteManager.currentHike ?: return
         val prefs = AppPreferences(applicationContext)
-        val requiredFixes = prefs.persistenceFixes
-        if (persistenceGatekeeper == null || persistenceGatekeeper?.requiredFixes != requiredFixes) {
-            persistenceGatekeeper = PersistenceGatekeeper(requiredFixes)
-        }
 
-        val breadcrumbs = RouteManager.breadcrumbs
-        val waypoints = RouteManager.waypoints
-        if (waypoints.isEmpty() || breadcrumbs.size < 2) return
+        val result = hike.evaluateCourseCorrection(
+            lowSpeedCutoff = prefs.lowSpeedCutoff,
+            loopbackDistance = prefs.loopbackDistance,
+            coneAngle = prefs.coneAngle,
+            requiredFixes = prefs.persistenceFixes
+        )
 
-        // 1. Low-Speed / Stationary Suppression Guard
-        val currentSpeed = CoordinateUtils.calculateRecentSpeed(breadcrumbs, prefs.loopbackDistance)
-        if (currentSpeed < prefs.lowSpeedCutoff) {
-            persistenceGatekeeper?.reset()
-            return
-        }
-
-        // 2. Distance Loopback Window
-        val rawBearing = CoordinateUtils.calculateLoopbackBearing(breadcrumbs, prefs.loopbackDistance) ?: return
-
-        // 3. Vector Exponential Moving Average (Vector EMA)
-        val smoothedBearing = headingSmoother.update(rawBearing)
-
-        // 4. Deviation calculation
-        val idx = RouteManager.currentWaypointIndex.coerceIn(0, waypoints.size - 1)
-        val targetWp = if (idx < waypoints.size - 1) waypoints[idx + 1] else waypoints[idx]
-        val lastBc = breadcrumbs.last()
-        val targetBearing = CoordinateUtils.calculateBearing(lastBc.x, lastBc.y, targetWp.x, targetWp.y)
-
-        val deltaB = CoordinateUtils.computeAngularDeviation(smoothedBearing, targetBearing)
-        val isOffCourse = kotlin.math.abs(deltaB) > prefs.coneAngle
-
-        // 5. Hysteresis & Persistence Gatekeeper
-        val alertTriggered = persistenceGatekeeper?.update(isOffCourse) ?: false
-        if (!alertTriggered) return
-
-        // 6. Cooldown Check & Spoken Warning
-        val now = System.currentTimeMillis()
-        if (now - lastCourseCorrectionTime < courseCorrectionCooldownMs) {
-            return
-        }
-
-        val message = TtsManager.generateCourseCorrectionMessage(smoothedBearing, targetBearing, prefs.coneAngle)
-        if (message != null) {
+        if (result.shouldAlert && result.message != null) {
             requestAudioFocus()
-            ttsManager.speak(message)
-            lastCourseCorrectionTime = now
-            persistenceGatekeeper?.reset()
+            ttsManager.speak(result.message)
+            RouteManager.logError("Course correction alert spoken.")
+        }
+    }
+
+    private fun checkProximityAlert() {
+        if (RouteManager.hikeState != HikeState.HIKING) return
+        val hike = RouteManager.currentHike ?: return
+        val prefs = AppPreferences(applicationContext)
+
+        val result = hike.evaluateProximity(prefs.proximityThreshold, prefs.loopbackDistance)
+
+        if (result.shouldAlert && result.message != null) {
+            requestAudioFocus()
+            ttsManager.speak(result.message)
+            RouteManager.logError("Proximity alert spoken for target waypoint index ${result.targetWaypointIndex}.")
         }
     }
 
@@ -396,6 +378,7 @@ class HikingForegroundService : Service() {
                 lastCourseCorrectionTime = 0L
                 headingSmoother.reset()
                 persistenceGatekeeper?.reset()
+                RouteManager.lastProximityAlertWaypointIndex = -1
                 val hasFine = ActivityCompat.checkSelfPermission(
                     this,
                     Manifest.permission.ACCESS_FINE_LOCATION

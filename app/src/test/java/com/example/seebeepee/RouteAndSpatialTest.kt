@@ -546,5 +546,50 @@ class RouteAndSpatialTest {
         RouteManager.logError("Simulated SecurityException test during startForeground")
         assertTrue(RouteManager.debugLogs.any { it.contains("Simulated SecurityException") })
     }
+
+    @Test
+    fun testRelativeBearingAndProximityMessageGeneration() {
+        // Test relative bearing computation: B_target - B_hiker
+        val rel1 = CoordinateUtils.computeRelativeBearing(75.0, 90.0) // 90 - 75 = 15
+        assertEquals(15.0, rel1, 0.001)
+        assertEquals("+15", CoordinateUtils.formatRelativeBearing(rel1))
+
+        val rel2 = CoordinateUtils.formatRelativeBearing(CoordinateUtils.computeRelativeBearing(70.0, 50.0)) // 50 - 70 = -20
+        assertEquals("-20", rel2)
+
+        val rel3 = CoordinateUtils.formatRelativeBearing(CoordinateUtils.computeRelativeBearing(45.0, 45.0)) // 0
+        assertEquals("0", rel3)
+
+        // Test proximity message generation with description
+        val wpWithDesc = Waypoint("Summit", 1000.0, 1000.0, 500.0, description = "Windy peak")
+        val msg1 = com.example.seebeepee.util.TtsManager.generateProximityMessage(wpWithDesc, 85.4, "+15")
+        assertEquals("Summit is 85 m away at +15 degrees. Windy peak", msg1)
+
+        // Test proximity message generation without description
+        val wpWithoutDesc = Waypoint("Cairn", 1000.0, 1000.0, 400.0, description = "")
+        val msg2 = com.example.seebeepee.util.TtsManager.generateProximityMessage(wpWithoutDesc, 50.1, "-20")
+        assertEquals("Cairn is 50 m away at -20 degrees.", msg2)
+    }
+
+    @Test
+    fun testProximityAlertTrackingAndReset() {
+        RouteManager.clearBreadcrumbs()
+        val w0 = Waypoint("Start", 0.0, 0.0, 0.0)
+        val w1 = Waypoint("Target1", 0.0, 80.0, 0.0, description = "Lookout")
+        val w2 = Waypoint("Target2", 0.0, 200.0, 0.0)
+        RouteManager.loadWaypoints("TestRoute", listOf(w0, w1, w2))
+
+        assertEquals(0, RouteManager.currentWaypointIndex)
+        assertEquals(-1, RouteManager.lastProximityAlertWaypointIndex)
+
+        // Simulate reaching proximity threshold (targetIndex = 1, dist = 80m <= 100m default threshold)
+        RouteManager.lastProximityAlertWaypointIndex = 1
+        assertEquals(1, RouteManager.lastProximityAlertWaypointIndex)
+
+        // Advancing waypoint resets lastProximityAlertWaypointIndex
+        RouteManager.currentWaypointIndex = 1
+        RouteManager.lastProximityAlertWaypointIndex = -1
+        assertEquals(-1, RouteManager.lastProximityAlertWaypointIndex)
+    }
 }
 

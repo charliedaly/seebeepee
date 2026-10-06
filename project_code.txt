@@ -827,6 +827,22 @@ object CoordinateUtils {
     }
 
     /**
+     * Computes relative bearing from hiker movement bearing bHiker to target bearing bTarget
+     * (bTarget - bHiker, normalized to [-180.0, 180.0] degrees).
+     */
+    fun computeRelativeBearing(bHiker: Double, bTarget: Double): Double {
+        return normalizeAngle180(bTarget - bHiker)
+    }
+
+    /**
+     * Formats relative bearing with an explicit sign if positive (e.g., "+15", "-20", "0").
+     */
+    fun formatRelativeBearing(relativeBearing: Double): String {
+        val rounded = relativeBearing.roundToInt()
+        return if (rounded > 0) "+$rounded" else rounded.toString()
+    }
+
+    /**
      * Computes movement bearing by looking back along recorded breadcrumbs until cumulative distance
      * exceeds [loopbackDistanceMeters] (default 10 meters).
      * Returns null if fewer than 2 breadcrumbs exist or if movement distance is zero.
@@ -1189,6 +1205,19 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                 climbPenalty = prefs.climbPenalty
             )
         }
+
+        fun generateProximityMessage(
+            target: com.example.seebeepee.model.Waypoint,
+            dist: Double,
+            relativeBearingStr: String
+        ): String {
+            val base = "${target.name} is ${dist.roundToInt()} m away at $relativeBearingStr degrees."
+            return if (target.description.isNotBlank()) {
+                "$base ${target.description}"
+            } else {
+                base
+            }
+        }
     }
 }
 
@@ -1415,6 +1444,11 @@ class AppPreferences(context: Context) {
         get() = prefs.getFloat("low_speed_cutoff", 1.2f).toDouble()
         set(value) = prefs.edit().putFloat("low_speed_cutoff", value.toFloat()).apply()
 
+    var headingSmoothingAlpha: Double
+        get() = prefs.getFloat("heading_smoothing_alpha", 0.3f).toDouble()
+        set(value) = prefs.edit().putFloat("heading_smoothing_alpha", value.toFloat()).apply()
+
+
     var persistenceFixes: Int
         get() = prefs.getInt("persistence_fixes", 2)
         set(value) = prefs.edit().putInt("persistence_fixes", value).apply()
@@ -1426,6 +1460,10 @@ class AppPreferences(context: Context) {
     var nearMissThreshold: Double
         get() = prefs.getFloat("near_miss_threshold", 40.0f).toDouble()
         set(value) = prefs.edit().putFloat("near_miss_threshold", value.toFloat()).apply()
+
+    var proximityThreshold: Double
+        get() = prefs.getFloat("proximity_threshold", 100.0f).toDouble()
+        set(value) = prefs.edit().putFloat("proximity_threshold", value.toFloat()).apply()
 
     var voiceAlertsEnabled: Boolean
         get() = prefs.getBoolean("voice_alerts_enabled", true)
@@ -1690,7 +1728,9 @@ object RouteParser {
     }
     /**
      * Parses CSV route content into a list of Waypoints.
-     * Supports columns: grid_ref/grid/location, latitude/lat, longitude/lon, altitude/alt/elevation/ele, name/title.
+     * Supports columns: grid_ref/grid/location, latitude/lat, longitude/lon, altitude/alt/elevation/ele, name/title,
+     * threshold/reach_threshold/radius, description/desc/waypoint_desc/waypoint_description/notes/comments,
+     * leg_description/leg_desc/leg_notes/leg_comments.
      */
     fun parseCsv(csvContent: String): List<Waypoint> {
         val waypoints = mutableListOf<Waypoint>()
@@ -1708,6 +1748,8 @@ object RouteParser {
         val lonIdx = headers.indexOfFirst { it in listOf("longitude", "lon") }
         val altIdx = headers.indexOfFirst { it in listOf("altitude", "alt", "elevation", "ele") }
         val thresholdIdx = headers.indexOfFirst { it in listOf("threshold", "reach_threshold", "radius") }
+        val descIdx = headers.indexOfFirst { it in listOf("description", "desc", "waypoint_desc", "waypoint_description", "notes", "comments") }
+        val legDescIdx = headers.indexOfFirst { it in listOf("leg_description", "leg_desc", "leg_notes", "leg_comments") }
 
         for (i in 1 until lines.size) {
             val line = lines[i].trim()
@@ -1734,13 +1776,25 @@ object RouteParser {
                 null
             }
 
+            val description = if (descIdx >= 0 && descIdx < tokens.size) {
+                tokens[descIdx].trim().removeSurrounding("\"", "\"")
+            } else {
+                ""
+            }
+
+            val legDescription = if (legDescIdx >= 0 && legDescIdx < tokens.size) {
+                tokens[legDescIdx].trim().removeSurrounding("\"", "\"")
+            } else {
+                ""
+            }
+
             val waypoint = if (gridIdx >= 0 && gridIdx < tokens.size && tokens[gridIdx].isNotBlank()) {
                 val gridRef = tokens[gridIdx].trim().removeSurrounding("\"", "\"")
-                Waypoint.fromGridReference(name, gridRef, alt, threshold)
+                Waypoint.fromGridReference(name, gridRef, alt, threshold, description, legDescription)
             } else if (latIdx >= 0 && lonIdx >= 0 && latIdx < tokens.size && lonIdx < tokens.size) {
                 val lat = tokens[latIdx].trim().removeSurrounding("\"", "\"").toDoubleOrNull() ?: 0.0
                 val lon = tokens[lonIdx].trim().removeSurrounding("\"", "\"").toDoubleOrNull() ?: 0.0
-                Waypoint.fromLatLon(name, lat, lon, alt, threshold)
+                Waypoint.fromLatLon(name, lat, lon, alt, threshold, description, legDescription)
             } else {
                 continue
             }
@@ -1870,11 +1924,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var lowSpeedCutoff by mutableDoubleStateOf(prefs.lowSpeedCutoff)
         private set
+    var headingSmoothingAlpha by mutableDoubleStateOf(prefs.headingSmoothingAlpha)
+        private set
     var persistenceFixes by mutableIntStateOf(prefs.persistenceFixes)
         private set
     var arrivalThreshold by mutableDoubleStateOf(prefs.arrivalThreshold)
         private set
     var nearMissThreshold by mutableDoubleStateOf(prefs.nearMissThreshold)
+        private set
+    var proximityThreshold by mutableDoubleStateOf(prefs.proximityThreshold)
         private set
 
     var showWaypointName by mutableStateOf(prefs.showWaypointName)
@@ -1982,6 +2040,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         prefs.lowSpeedCutoff = cutoff
     }
 
+    fun updateHeadingSmoothingAlpha(alpha: Float) {
+        headingSmoothingAlpha = alpha.toDouble()
+        prefs.headingSmoothingAlpha = headingSmoothingAlpha
+    }
     fun updatePersistenceFixes(fixes: Int) {
         persistenceFixes = fixes
         prefs.persistenceFixes = fixes
@@ -1990,6 +2052,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun updateArrivalThreshold(threshold: Double) {
         arrivalThreshold = threshold
         prefs.arrivalThreshold = threshold
+    }
+
+    fun updateProximityThreshold(threshold: Double) {
+        proximityThreshold = threshold
+        prefs.proximityThreshold = threshold
     }
 
     fun updateNearMissThreshold(threshold: Double) {
@@ -2243,6 +2310,43 @@ data class Breadcrumb(
 }
 
 
+// --- FILE: app/src/main/java/com/example/seebeepee/model/Hike.kt ---
+
+package com.example.seebeepee.model
+
+class Hike(val route: Route) {
+    val breadcrumbs = mutableListOf<Breadcrumb>()
+    var currentIndex: Int = 0
+    val startTime: Long = System.currentTimeMillis()
+
+    // Audio / Leg state tracking encapsulated right here!
+    var descriptionAnnounced: Boolean = false
+    var approachAnnouncementMade: Boolean = false
+
+    fun getCurrentTargetWaypoint(): Waypoint? {
+        return route.waypoints.getOrNull(currentIndex + 1) // Accounting for origin vs target index model
+    }
+
+    fun getNextTargetWaypoint(): Waypoint? {
+        return route.waypoints.getOrNull(currentIndex + 2)
+    }
+
+    fun advanceWaypoint() {
+        currentIndex++
+        // Reset flags instantly for the new leg
+        descriptionAnnounced = false
+        approachAnnouncementMade = false
+    }
+
+    fun isFinished(): Boolean {
+        return currentIndex + 1 >= route.waypoints.size
+    }
+
+    fun addBreadcrumb(crumb: Breadcrumb) {
+        breadcrumbs.add(crumb)
+    }
+}
+
 // --- FILE: app/src/main/java/com/example/seebeepee/model/RouteManager.kt ---
 
 package com.example.seebeepee.model
@@ -2263,6 +2367,7 @@ object RouteManager {
     val waypointAdvancementEngine = WaypointAdvancementEngine()
 
     var currentWaypointIndex: Int = 0
+    var lastProximityAlertWaypointIndex: Int = -1
     var currentRouteName: String = "No Route Loaded"
     var currentFilePath: String? = null
     var currentFileUri: String? = null
@@ -2283,6 +2388,7 @@ object RouteManager {
         waypoints.clear()
         waypoints.addAll(newWaypoints)
         currentWaypointIndex = 0
+        lastProximityAlertWaypointIndex = -1
         waypointAdvancementEngine.reset()
         if (newWaypoints.isNotEmpty()) {
             hikeState = HikeState.ROUTE_LOADED
@@ -2393,6 +2499,7 @@ object RouteManager {
     fun clearBreadcrumbs() {
         breadcrumbs.clear()
         waypointAdvancementEngine.reset()
+        lastProximityAlertWaypointIndex = -1
         logError("Breadcrumbs cleared.")
     }
 
@@ -2437,7 +2544,9 @@ data class Waypoint(
     val x: Double,
     val y: Double,
     val altitude: Double = 0.0,
-    val threshold: Double? = null
+    val threshold: Double? = null,
+    val description: String = "",
+    val legDescription: String = ""
 ) {
     fun toLatLonString(): String {
         val (lat, lon) = CoordinateUtils.metricToLatLon(x, y)
@@ -2449,14 +2558,29 @@ data class Waypoint(
     }
 
     companion object {
-        fun fromGridReference(name: String, gridRef: String, altitude: Double = 0.0, threshold: Double? = null): Waypoint {
+        fun fromGridReference(
+            name: String,
+            gridRef: String,
+            altitude: Double = 0.0,
+            threshold: Double? = null,
+            description: String = "",
+            legDescription: String = ""
+        ): Waypoint {
             val (x, y) = CoordinateUtils.parseGridReference(gridRef)
-            return Waypoint(name, x, y, altitude, threshold)
+            return Waypoint(name, x, y, altitude, threshold, description, legDescription)
         }
 
-        fun fromLatLon(name: String, lat: Double, lon: Double, altitude: Double = 0.0, threshold: Double? = null): Waypoint {
+        fun fromLatLon(
+            name: String,
+            lat: Double,
+            lon: Double,
+            altitude: Double = 0.0,
+            threshold: Double? = null,
+            description: String = "",
+            legDescription: String = ""
+        ): Waypoint {
             val (x, y) = CoordinateUtils.latLonToMetric(lat, lon)
-            return Waypoint(name, x, y, altitude, threshold)
+            return Waypoint(name, x, y, altitude, threshold, description, legDescription)
         }
     }
 }
@@ -2566,6 +2690,7 @@ import com.example.seebeepee.util.HeadingSmoother
 import com.example.seebeepee.util.PersistenceGatekeeper
 import com.example.seebeepee.util.TtsManager
 import kotlinx.coroutines.*
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 class HikingForegroundService : Service() {
@@ -2585,7 +2710,9 @@ class HikingForegroundService : Service() {
     // Course correction variables
     private var lastCourseCorrectionTime: Long = 0L
     private val courseCorrectionCooldownMs: Long = 15000L // 15 seconds cooldown
-    private val headingSmoother = HeadingSmoother(alpha = 0.3)
+    private lateinit var headingSmoother: HeadingSmoother
+    //private val headingSmoother = HeadingSmoother(alpha = 0.3)
+
     private var persistenceGatekeeper: PersistenceGatekeeper? = null
 
     companion object {
@@ -2601,6 +2728,10 @@ class HikingForegroundService : Service() {
         setupMediaSession()
         requestAudioFocus()
         startInaudibleAudioStream()
+
+        val prefs = AppPreferences(applicationContext)
+        headingSmoother = HeadingSmoother(alpha = prefs.headingSmoothingAlpha)
+
         createNotificationChannel()
         setupLocationCallback()
     }
@@ -2735,6 +2866,7 @@ class HikingForegroundService : Service() {
                     RouteManager.addBreadcrumb(breadcrumb)
 
                     checkWaypointAdvancement()
+                    checkProximityAlert()
                     checkCourseCorrectionAlert()
                 }
             }
@@ -2750,6 +2882,7 @@ class HikingForegroundService : Service() {
         if (result.advanced) {
             RouteManager.currentWaypointIndex = result.newIndex
             persistenceGatekeeper?.reset()
+            RouteManager.lastProximityAlertWaypointIndex = -1
             RouteManager.logError("Auto-advanced waypoint to index ${result.newIndex}: ${result.reachedWaypoint?.name}. Reason: ${result.reason}")
 
             result.ttsAnnouncement?.let { announcement ->
@@ -2810,6 +2943,44 @@ class HikingForegroundService : Service() {
             ttsManager.speak(message)
             lastCourseCorrectionTime = now
             persistenceGatekeeper?.reset()
+        }
+    }
+
+    private fun checkProximityAlert() {
+        if (RouteManager.hikeState != HikeState.HIKING) return
+
+        val waypoints = RouteManager.waypoints
+        if (waypoints.isEmpty()) return
+
+        val currentIndex = RouteManager.currentWaypointIndex.coerceIn(0, waypoints.size - 1)
+        val targetIndex = currentIndex + 1
+        if (targetIndex >= waypoints.size) return
+
+        val targetWp = waypoints[targetIndex]
+        if (RouteManager.lastProximityAlertWaypointIndex == targetIndex) return
+
+        val breadcrumbs = RouteManager.breadcrumbs
+        if (breadcrumbs.isEmpty()) return
+
+        val lastBc = breadcrumbs.last()
+        val dist = CoordinateUtils.calculateDistance(lastBc.x, lastBc.y, targetWp.x, targetWp.y)
+        val prefs = AppPreferences(applicationContext)
+
+        if (dist <= prefs.proximityThreshold) {
+            val bHiker = CoordinateUtils.calculateLoopbackBearing(breadcrumbs, prefs.loopbackDistance) ?: CoordinateUtils.calculateBearing(
+                if (breadcrumbs.size >= 2) breadcrumbs[breadcrumbs.size - 2].x else lastBc.x,
+                if (breadcrumbs.size >= 2) breadcrumbs[breadcrumbs.size - 2].y else lastBc.y,
+                lastBc.x, lastBc.y
+            )
+            val bTarget = CoordinateUtils.calculateBearing(lastBc.x, lastBc.y, targetWp.x, targetWp.y)
+            val relBearing = CoordinateUtils.computeRelativeBearing(bHiker, bTarget)
+            val relBearingStr = CoordinateUtils.formatRelativeBearing(relBearing)
+
+            val message = TtsManager.generateProximityMessage(targetWp, dist, relBearingStr)
+            requestAudioFocus()
+            ttsManager.speak(message)
+            RouteManager.lastProximityAlertWaypointIndex = targetIndex
+            RouteManager.logError("Proximity alert spoken for target waypoint ${targetWp.name} at distance ${dist.roundToInt()}m.")
         }
     }
 
@@ -2917,6 +3088,7 @@ class HikingForegroundService : Service() {
                 lastCourseCorrectionTime = 0L
                 headingSmoother.reset()
                 persistenceGatekeeper?.reset()
+                RouteManager.lastProximityAlertWaypointIndex = -1
                 val hasFine = ActivityCompat.checkSelfPermission(
                     this,
                     Manifest.permission.ACCESS_FINE_LOCATION
@@ -3870,8 +4042,8 @@ fun MainScreen(
                                 Slider(
                                     value = viewModel.loopbackDistance.toFloat(),
                                     onValueChange = { viewModel.updateLoopbackDistance(it.toDouble()) },
-                                    valueRange = 5f..50f,
-                                    steps = 8
+                                    valueRange = 2f..40f,
+                                    steps = 39 // 40 -2 + 1
                                 )
                             }
 
@@ -3882,6 +4054,24 @@ fun MainScreen(
                                     onValueChange = { viewModel.updateLowSpeedCutoff(it.toDouble()) },
                                     valueRange = 0.5f..3.0f,
                                     steps = 25
+                                )
+                            }
+
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    text = "Heading Smoothing Alpha: ${String.format("%.2f", viewModel.headingSmoothingAlpha)}",
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Slider(
+                                    value = viewModel.headingSmoothingAlpha.toFloat(),
+                                    onValueChange = { viewModel.updateHeadingSmoothingAlpha(it) },
+                                    valueRange = 0.05f..1.0f
+                                )
+                                Text(
+                                    text = "Lower values smooth compass jitter more; higher values make turns react faster.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
 
@@ -3902,6 +4092,16 @@ fun MainScreen(
                                     onValueChange = { viewModel.updateArrivalThreshold(it.toDouble()) },
                                     valueRange = 5f..50f,
                                     steps = 45
+                                )
+                            }
+
+                            Column {
+                                Text(text = "Proximity Alert Threshold: ${viewModel.proximityThreshold.toInt()}m", fontSize = 13.sp)
+                                Slider(
+                                    value = viewModel.proximityThreshold.toFloat(),
+                                    onValueChange = { viewModel.updateProximityThreshold(it.toDouble()) },
+                                    valueRange = 20f..300f,
+                                    steps = 280
                                 )
                             }
 

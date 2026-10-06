@@ -49,7 +49,7 @@ fun MapScreen(
     modifier: Modifier = Modifier
 ) {
     val waypoints = RouteManager.waypoints
-    val breadcrumbs = RouteManager.breadcrumbs
+    val breadcrumbs = viewModel.currentHike?.breadcrumbs ?: emptyList()
 
     var showMapSettings by remember { mutableStateOf(false) }
 

@@ -7,7 +7,9 @@ data class Waypoint(
     val x: Double,
     val y: Double,
     val altitude: Double = 0.0,
-    val threshold: Double? = null
+    val threshold: Double? = null,
+    val description: String = "",
+    val legDescription: String = ""
 ) {
     fun toLatLonString(): String {
         val (lat, lon) = CoordinateUtils.metricToLatLon(x, y)
@@ -19,14 +21,29 @@ data class Waypoint(
     }
 
     companion object {
-        fun fromGridReference(name: String, gridRef: String, altitude: Double = 0.0, threshold: Double? = null): Waypoint {
+        fun fromGridReference(
+            name: String,
+            gridRef: String,
+            altitude: Double = 0.0,
+            threshold: Double? = null,
+            description: String = "",
+            legDescription: String = ""
+        ): Waypoint {
             val (x, y) = CoordinateUtils.parseGridReference(gridRef)
-            return Waypoint(name, x, y, altitude, threshold)
+            return Waypoint(name, x, y, altitude, threshold, description, legDescription)
         }
 
-        fun fromLatLon(name: String, lat: Double, lon: Double, altitude: Double = 0.0, threshold: Double? = null): Waypoint {
+        fun fromLatLon(
+            name: String,
+            lat: Double,
+            lon: Double,
+            altitude: Double = 0.0,
+            threshold: Double? = null,
+            description: String = "",
+            legDescription: String = ""
+        ): Waypoint {
             val (x, y) = CoordinateUtils.latLonToMetric(lat, lon)
-            return Waypoint(name, x, y, altitude, threshold)
+            return Waypoint(name, x, y, altitude, threshold, description, legDescription)
         }
     }
 }

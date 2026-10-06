@@ -72,6 +72,12 @@ Any errors, e.g. missing permissions need to be prominently displayed as the use
   * **Concise 6-Digit Grid Reference:** The live current position in the audio message is formatted as a concise 6-digit grid reference (3 digits Easting + 3 digits Northing) **without the zone letter prefix** (e.g., `880888`).
   * **Concise Spoken Message Format:** The spoken status string includes bearing, distance, time, and ends with the current position spoken a digit at a time in two groups of 3: `"Bearing 214 degrees, Distance 605 meters, Time 16 minutes, Position 8 8 0, 8 8 8."`
   * **Off-Course Voice Alerts / Course Correction:** Computed automatically on new GPS updates during active hikes using the hybrid smoothed heading when speed exceeds `lowSpeedCutoff` and $|\Delta B| > \text{coneAngle}$ persists across $N$ fixes, generating `"Veer left X degrees"` ($\Delta B > 0$) or `"Veer right X degrees"` ($\Delta B < 0$) with a 15-second debounce/cooldown.
+  * **Target Proximity Speech Announcement:**
+    * **Proximity Threshold Setting:** Configurable `proximityThreshold` in `AppPreferences` (default 100 meters), adjustable via a slider in the Settings panel.
+    * **Proximity Speech Trigger:** When a new GPS location is received during an active hike, distance `dist` to `targetWaypoint` is computed. If `dist <= proximityThreshold` (and the proximity alert has not already been spoken for this target waypoint), TTS speech triggers: `"${target.name} is ${dist.roundToInt()} m away at ${relativeBearingStr} degrees. ${target.description}"`.
+    * **Relative Bearing ($relativeBearingStr$):** Relative change in direction from hiker movement bearing $B_{hiker}$ to target bearing $B_{target}$ ($B_{target} - B_{hiker}$, normalized to $[-180^\circ, 180^\circ]$), formatted with an explicit sign if positive (e.g., `+15` or `-20`).
+    * **Waypoint Description:** Appends `target.description` if present and non-blank.
+    * **Tracking & Reset:** Tracked via `RouteManager.lastProximityAlertWaypointIndex`, ensuring the alert fires exactly once per target waypoint and automatically resets when advancing to the next waypoint.
   * **UI Independence:** UI screens continue to follow the user's Settings preferences for coordinate system and grid reference precision, while TTS audio strictly uses the concise 6-digit live format.
 * **Alert Intervals:** Spoken updates on waypoint change, off-course warnings, or periodic intervals. Spoken when the play button on the Bluetooth headset is pressed.
 
@@ -89,7 +95,7 @@ Any errors, e.g. missing permissions need to be prominently displayed as the use
 ## 3. Data Schema, Persistence & File Onboarding
 
 ### 3.1 Route File Schema (CSV & GPX)
-Accepts CSV route files or GPX tracks containing grid references / latitude/longitude, altitude, name, optional `threshold` (supporting column names `threshold`, `reach_threshold`, `radius`) specifying custom arrival distance in meters for per-waypoint arrival evaluation, optional waypoint `description` (supporting column names `description`, `desc`, `waypoint_desc`, `notes`, `comments`), and optional `legDescription` (supporting column names `leg_description`, `leg_desc`, `leg_notes`).
+Accepts CSV route files or GPX tracks containing grid references / latitude/longitude, altitude, name, optional `threshold` (supporting column names `threshold`, `reach_threshold`, `radius`) specifying custom arrival distance in meters for per-waypoint arrival evaluation, optional waypoint `description` (supporting column names `description`, `desc`, `waypoint_desc`, `waypoint_description`, `notes`, `comments`), and optional `legDescription` (supporting column names `leg_description`, `leg_desc`, `leg_notes`, `leg_comments`).
 
 ### 3.2 Persistent App State & Instant Persistence (`AppPreferences`)
 * **Waypoint Data Model:** Each `Waypoint` contains `name`, coordinates (`x`, `y`), `altitude`, optional `threshold`, `description` (defaulting to `""`), and `legDescription` (defaulting to `""`).

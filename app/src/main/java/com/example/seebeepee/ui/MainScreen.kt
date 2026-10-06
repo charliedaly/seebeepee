@@ -18,8 +18,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.FileOpen
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
@@ -32,13 +34,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.example.seebeepee.model.HikeState
 import com.example.seebeepee.model.RouteManager
 import com.example.seebeepee.service.HikingForegroundService
-import com.example.seebeepee.ui.theme.SeeBeePeeTheme
 import com.example.seebeepee.util.CoordinateUtils
 import com.example.seebeepee.util.RouteParser
 import com.example.seebeepee.viewmodel.MainViewModel
@@ -59,10 +60,13 @@ fun MainScreen(
     val legMetrics = viewModel.legMetrics
     val waypoints = RouteManager.waypoints
 
-    var isTrackingActive by remember { mutableStateOf(false) }
+    var isTrackingActive by remember { mutableStateOf(viewModel.isHikeActive || RouteManager.hikeState == HikeState.HIKING) }
+    LaunchedEffect(viewModel.isHikeActive, RouteManager.hikeState) {
+        isTrackingActive = viewModel.isHikeActive || RouteManager.hikeState == HikeState.HIKING
+    }
     var showSaveGpxDialog by remember { mutableStateOf(false) }
+    var showRoutePickerModal by remember { mutableStateOf(false) }
 
-    // File picker launcher for CSV/GPX route files
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -70,15 +74,18 @@ fun MainScreen(
             try {
                 val inputStream = context.contentResolver.openInputStream(uri)
                 val content = inputStream?.bufferedReader()?.use { it.readText() } ?: ""
-                val parsedWaypoints = if (uri.toString().endsWith(".gpx", true) || content.contains("<gpx", true)) {
+                val fileName = RouteParser.extractRouteNameFromUri(context, uri)
+                val isGpx = uri.toString().endsWith(".gpx", true) || content.contains("<gpx", true)
+                val parsedWaypoints = if (isGpx) {
                     RouteParser.parseGpx(content)
                 } else {
                     RouteParser.parseCsv(content)
                 }
 
                 if (parsedWaypoints.isNotEmpty()) {
-                    val fileName = (uri.lastPathSegment ?: "Imported Route").substringBeforeLast(".")
-                    viewModel.loadRoute(fileName, parsedWaypoints)
+                    val filePath = uri.path ?: uri.toString()
+                    val fileUri = uri.toString()
+                    viewModel.loadRoute(fileName, parsedWaypoints, content = content, filePath = filePath, fileUri = fileUri)
                 }
             } catch (e: Exception) {
                 RouteManager.logError("Error opening route file: ${e.message}")
@@ -86,7 +93,6 @@ fun MainScreen(
         }
     }
 
-    // Auto-scroll behavior favoring upcoming waypoints
     LaunchedEffect(currentIndex) {
         if (waypoints.isNotEmpty()) {
             val scrollTarget = (currentIndex + 1).coerceAtMost(waypoints.size - 1)
@@ -96,7 +102,6 @@ fun MainScreen(
         }
     }
 
-    // Save GPX Dialog when stopping tracking
     if (showSaveGpxDialog) {
         AlertDialog(
             onDismissRequest = { showSaveGpxDialog = false },
@@ -104,16 +109,21 @@ fun MainScreen(
             text = { Text("Do you want to save your hike breadcrumbs as a GPX track before stopping?") },
             confirmButton = {
                 TextButton(onClick = {
-                    RouteManager.persistUnsavedBreadcrumbs()
+                    val savedFile = viewModel.finishHike(save = true, context = context)
                     showSaveGpxDialog = false
-                    viewModel.gpsStatus = "Breadcrumbs saved to GPX"
+                    if (savedFile != null) {
+                        val folderName = if (savedFile.parentFile?.name.equals("Download", true)) "Downloads" else (savedFile.parentFile?.name ?: "Downloads")
+                        viewModel.gpsStatus = "Saved to $folderName: ${savedFile.name}"
+                    } else {
+                        viewModel.gpsStatus = "Breadcrumbs saved to GPX"
+                    }
                 }) {
                     Text("Save")
                 }
             },
             dismissButton = {
                 TextButton(onClick = {
-                    RouteManager.clearBreadcrumbs()
+                    viewModel.finishHike(save = false, context = context)
                     showSaveGpxDialog = false
                     viewModel.gpsStatus = "Breadcrumbs discarded"
                 }) {
@@ -123,10 +133,47 @@ fun MainScreen(
         )
     }
 
+    if (showRoutePickerModal) {
+        AlertDialog(
+            onDismissRequest = { showRoutePickerModal = false },
+            title = { Text("Select Route") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            val sampleCsv = RouteParser.generateSampleIrishGridCsv()
+                            val sampleWps = RouteParser.parseCsv(sampleCsv)
+                            viewModel.loadRoute("Sample Hike (Irish Grid)", sampleWps, content = sampleCsv)
+                            showRoutePickerModal = false
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Sample Hike (Irish Grid)")
+                    }
+                    Button(
+                        onClick = {
+                            filePickerLauncher.launch(arrayOf("*/*"))
+                            showRoutePickerModal = false
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                    ) {
+                        Text("Import GPX / Route File...")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showRoutePickerModal = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     val hasLocationPermission = remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         )
     }
 
@@ -204,7 +251,6 @@ fun MainScreen(
         isGpsEnabled.value = gpsOn
 
         if (!hasLocationPermission.value) {
-            RouteManager.logError("Location permissions missing when starting GPS tracking. Requesting permissions.")
             viewModel.gpsStatus = "Permission Required"
             val permissionsToRequest = mutableListOf(
                 Manifest.permission.ACCESS_FINE_LOCATION,
@@ -215,10 +261,10 @@ fun MainScreen(
             }
             permissionLauncher.launch(permissionsToRequest.toTypedArray())
         } else if (!gpsOn) {
-            RouteManager.logError("GPS is disabled when starting GPS tracking.")
             viewModel.gpsStatus = "GPS Disabled"
             showGpsDisabledDialog = true
         } else {
+            viewModel.startHike()
             val serviceIntent = Intent(context, HikingForegroundService::class.java)
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -228,12 +274,7 @@ fun MainScreen(
                 }
                 isTrackingActive = true
                 viewModel.gpsStatus = "GPS Tracking Active"
-            } catch (e: SecurityException) {
-                RouteManager.logError("SecurityException starting service: ${e.message}")
-                isTrackingActive = false
-                viewModel.gpsStatus = "Tracking Failed (Permission Denied)"
             } catch (e: Exception) {
-                RouteManager.logError("Error starting service: ${e.message}")
                 isTrackingActive = false
                 viewModel.gpsStatus = "Tracking Failed"
             }
@@ -263,43 +304,70 @@ fun MainScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        val routeTitle = RouteManager.currentRouteName.substringBeforeLast(".")
-                        Text(
-                            text = if (routeTitle.equals("No Route Loaded", true)) "No Route Loaded" else routeTitle,
-                            maxLines = 1,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        if (waypoints.isNotEmpty()) {
-                            val totalDistKm = viewModel.totalDistance / 1000.0
-                            val totalClimbM = viewModel.totalClimb
-                            val totalTimeStr = formatHoursMinutes(viewModel.totalTimeRequired)
+            Surface(
+                color = MaterialTheme.colorScheme.primaryContainer,
+                tonalElevation = 3.dp
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             Text(
-                                text = String.format(Locale.US, "Distance %.1fkm Altitude %.0fm Time %s", totalDistKm, totalClimbM, totalTimeStr),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
+                                text = "ACTIVE ROUTE",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                                fontWeight = FontWeight.Bold
                             )
+                            Surface(
+                                onClick = { showRoutePickerModal = true },
+                                color = MaterialTheme.colorScheme.primary,
+                                shape = MaterialTheme.shapes.small
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Text("Change", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
+                                    Icon(imageVector = Icons.Default.KeyboardArrowDown, contentDescription = "Change Route", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onPrimary)
+                                }
+                            }
                         }
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                ),
-                actions = {
-                    // File load icon in the title section to open route file picker
-                    IconButton(onClick = { filePickerLauncher.launch(arrayOf("*/*")) }) {
-                        Icon(
-                            imageVector = Icons.Default.FileOpen,
-                            contentDescription = "Load Route File",
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+
+                    val routeTitle = RouteManager.currentRouteName.substringBeforeLast(".")
+                    Text(
+                        text = if (routeTitle.equals("No Route Loaded", true)) "No Route Loaded" else routeTitle,
+                        maxLines = 1,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+
+                    if (waypoints.isNotEmpty()) {
+                        val totalDistKm = viewModel.totalDistance / 1000.0
+                        val totalClimbM = viewModel.totalClimb
+                        val totalTimeStr = formatHoursMinutes(viewModel.totalTimeRequired)
+                        Text(
+                            text = String.format(Locale.US, "Distance %.1fkm • Altitude %.0fm • Time %s", totalDistKm, totalClimbM, totalTimeStr),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
                         )
                     }
                 }
-            )
+            }
         },
         bottomBar = {
             Surface(
@@ -316,18 +384,14 @@ fun MainScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Start / Finish Button
                     Button(
                         onClick = {
                             if (isTrackingActive) {
+                                viewModel.stopHike()
                                 val serviceIntent = Intent(context, HikingForegroundService::class.java).apply {
                                     action = HikingForegroundService.ACTION_STOP
                                 }
-                                try {
-                                    context.startService(serviceIntent)
-                                } catch (e: Exception) {
-                                    RouteManager.logError("Error stopping tracking service: ${e.message}")
-                                }
+                                context.startService(serviceIntent)
                                 isTrackingActive = false
                                 viewModel.gpsStatus = "GPS Tracking Paused"
                                 showSaveGpxDialog = true
@@ -353,7 +417,6 @@ fun MainScreen(
                         Text(if (isTrackingActive) "Finish" else "Start", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
 
-                    // Map Screen Button (Globe / Map icon)
                     OutlinedButton(
                         onClick = onNavigateToMap,
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
@@ -367,7 +430,6 @@ fun MainScreen(
                         Text("Map", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
 
-                    // Settings Button (Gear icon)
                     IconButton(
                         onClick = { viewModel.showSettings = !viewModel.showSettings },
                         modifier = Modifier.size(48.dp)
@@ -394,131 +456,10 @@ fun MainScreen(
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Warning Banner for Missing Location Permission
-                if (!hasLocationPermission.value) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(
-                                text = "⚠️ Location Permission Required",
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Text(
-                                text = "SeeBeePee requires location permission to track your hike, record breadcrumbs, and calculate legs.",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Button(
-                                onClick = {
-                                    val permissionsToRequest = mutableListOf(
-                                        Manifest.permission.ACCESS_FINE_LOCATION,
-                                        Manifest.permission.ACCESS_COARSE_LOCATION
-                                    )
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                        permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
-                                    }
-                                    permissionLauncher.launch(permissionsToRequest.toTypedArray())
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                            ) {
-                                Text("Grant Location & Notification Permission")
-                            }
-                        }
-                    }
-                }
-
-                // Warning Banner for GPS Disabled
-                if (hasLocationPermission.value && !isGpsEnabled.value) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(
-                                text = "⚠️ GPS / Location Services Disabled",
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Text(
-                                text = "GPS provider is turned off in device settings. Please enable GPS for real-time tracking.",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Button(
-                                onClick = {
-                                    try {
-                                        context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
-                                    } catch (e: Exception) {
-                                        RouteManager.logError("Error opening location settings: ${e.message}")
-                                    }
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                            ) {
-                                Text("Enable GPS in Settings")
-                            }
-                        }
-                    }
-                }
-
-                // First-Run Onboarding Banner if no route is loaded
-                if (waypoints.isEmpty()) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(
-                                text = "Welcome to SeeBeePee Hike Navigator!",
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Text(
-                                text = "Get started by opening a route file (CSV / GPX) or generating a sample Irish Grid route.",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = { filePickerLauncher.launch(arrayOf("*/*")) },
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text("Open Route File")
-                                }
-                                Button(
-                                    onClick = {
-                                        val sampleCsv = RouteParser.generateSampleIrishGridCsv()
-                                        val sampleWps = RouteParser.parseCsv(sampleCsv)
-                                        viewModel.loadRoute("Sample Irish Grid Hike", sampleWps)
-                                    },
-                                    modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                                ) {
-                                    Text("Load Sample CSV")
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // 1. Top Section (Current Leg): Position, Bearing, Distance, Time, Target using 6-digit grid references
+                // 1. Redesigned Streamlined Current Leg / GPS Status Card
                 CurrentLegMetricsCard(viewModel = viewModel)
 
-                // 2. Waypoint Table: Compact rows using 6-digit grid reference values, no final totals row
+                // 2. Waypoint Table Card
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -625,11 +566,11 @@ fun MainScreen(
                     }
                 }
 
-                // 3. Overall Hike Statistics: Condensed two-line format
+                // 3. Redesigned Streamlined Overall Hike Statistics Card
                 OverallHikeStatsCard(viewModel = viewModel)
             }
 
-            // Settings Overlay Panel (Instant persistence as soon as changed, no Apply button)
+            // Settings Overlay Panel
             AnimatedVisibility(
                 visible = viewModel.showSettings,
                 enter = fadeIn(),
@@ -645,13 +586,15 @@ fun MainScreen(
                 ) {
                     Card(
                         modifier = Modifier
-                            .fillMaxWidth(0.9f)
-                            .wrapContentHeight()
+                            .fillMaxWidth(0.92f)
+                            .fillMaxHeight(0.85f)
                             .clickable(enabled = false) {},
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                     ) {
                         Column(
-                            modifier = Modifier.padding(16.dp),
+                            modifier = Modifier
+                                .padding(16.dp)
+                                .verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             Text(
@@ -661,7 +604,6 @@ fun MainScreen(
                                 color = MaterialTheme.colorScheme.primary
                             )
 
-                            // Flat Pace Slider
                             Column {
                                 Text(text = "Flat Pace: ${viewModel.flatPace.toInt()} min/km", fontSize = 13.sp)
                                 Slider(
@@ -672,7 +614,6 @@ fun MainScreen(
                                 )
                             }
 
-                            // Climb Penalty Slider
                             Column {
                                 Text(text = "Climb Penalty: ${String.format(Locale.US, "%.1f", viewModel.climbPenalty)} min / 10m", fontSize = 13.sp)
                                 Slider(
@@ -683,7 +624,6 @@ fun MainScreen(
                                 )
                             }
 
-                            // Coordinate System selector
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -710,7 +650,6 @@ fun MainScreen(
                                 }
                             }
 
-                            // Grid Reference Precision selector (when coordinate system is grid)
                             if (viewModel.coordinateSystem == "grid") {
                                 Column(
                                     modifier = Modifier.fillMaxWidth(),
@@ -736,7 +675,6 @@ fun MainScreen(
                                 }
                             }
 
-                            // Voice alerts toggle
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -749,7 +687,6 @@ fun MainScreen(
                                 )
                             }
 
-                            // Cone angle slider
                             Column {
                                 Text(text = "Off-Course Cone Angle: ${viewModel.coneAngle.toInt()}°", fontSize = 13.sp)
                                 Slider(
@@ -760,29 +697,72 @@ fun MainScreen(
                                 )
                             }
 
-                            Spacer(modifier = Modifier.height(4.dp))
+                            Column {
+                                Text(text = "Loopback Distance (D_loopback): ${viewModel.loopbackDistance.toInt()}m", fontSize = 13.sp)
+                                Slider(
+                                    value = viewModel.loopbackDistance.toFloat(),
+                                    onValueChange = { viewModel.updateLoopbackDistance(it.toDouble()) },
+                                    valueRange = 2f..40f,
+                                    steps = 39 // 40 -2 + 1
+                                )
+                            }
 
-                            // Route Load / Generate Sample Buttons in Settings
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = { filePickerLauncher.launch(arrayOf("*/*")) },
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text("Open Route File", fontSize = 11.sp)
-                                }
-                                Button(
-                                    onClick = {
-                                        val sampleCsv = RouteParser.generateSampleIrishGridCsv()
-                                        val sampleWps = RouteParser.parseCsv(sampleCsv)
-                                        viewModel.loadRoute("Sample Irish Grid Hike", sampleWps)
-                                    },
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text("Generate Sample", fontSize = 11.sp)
-                                }
+                            Column {
+                                Text(text = "Low-Speed Cutoff: ${String.format(Locale.US, "%.1f", viewModel.lowSpeedCutoff)} km/h", fontSize = 13.sp)
+                                Slider(
+                                    value = viewModel.lowSpeedCutoff.toFloat(),
+                                    onValueChange = { viewModel.updateLowSpeedCutoff(it.toDouble()) },
+                                    valueRange = 0.5f..3.0f,
+                                    steps = 25
+                                )
+                            }
+
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    text = "Heading Smoothing Alpha: ${String.format("%.2f", viewModel.headingSmoothingAlpha)}",
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Slider(
+                                    value = viewModel.headingSmoothingAlpha.toFloat(),
+                                    onValueChange = { viewModel.updateHeadingSmoothingAlpha(it) },
+                                    valueRange = 0.05f..1.0f
+                                )
+                                Text(
+                                    text = "Lower values smooth compass jitter more; higher values make turns react faster.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            Column {
+                                Text(text = "Off-Course Persistence: ${viewModel.persistenceFixes} fixes", fontSize = 13.sp)
+                                Slider(
+                                    value = viewModel.persistenceFixes.toFloat(),
+                                    onValueChange = { viewModel.updatePersistenceFixes(it.toInt()) },
+                                    valueRange = 1f..5f,
+                                    steps = 3
+                                )
+                            }
+
+                            Column {
+                                Text(text = "Waypoint Arrival Threshold: ${viewModel.arrivalThreshold.toInt()}m", fontSize = 13.sp)
+                                Slider(
+                                    value = viewModel.arrivalThreshold.toFloat(),
+                                    onValueChange = { viewModel.updateArrivalThreshold(it.toDouble()) },
+                                    valueRange = 5f..50f,
+                                    steps = 45
+                                )
+                            }
+
+                            Column {
+                                Text(text = "Near-Miss Threshold: ${viewModel.nearMissThreshold.toInt()}m", fontSize = 13.sp)
+                                Slider(
+                                    value = viewModel.nearMissThreshold.toFloat(),
+                                    onValueChange = { viewModel.updateNearMissThreshold(it.toDouble()) },
+                                    valueRange = 20f..100f,
+                                    steps = 80
+                                )
                             }
 
                             Button(
@@ -818,8 +798,8 @@ fun CurrentLegMetricsCard(viewModel: MainViewModel) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
     ) {
         Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -827,26 +807,29 @@ fun CurrentLegMetricsCard(viewModel: MainViewModel) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Position: $posStr",
-                    style = MaterialTheme.typography.bodyMedium,
+                    text = "GPS: $posStr",
+                    style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
                 Text(
                     text = viewModel.gpsStatus,
                     style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.primary
                 )
             }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.15f))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                MetricItem("Bearing", if (currentLeg != null && targetWp != null) "${String.format(Locale.US, "%.0f", currentLeg.bearing)}°" else "-")
-                MetricItem("Distance", if (currentLeg != null && targetWp != null) "${String.format(Locale.US, "%.0f", currentLeg.distanceMeters)}m" else "-")
-                MetricItem("Time", if (currentLeg != null && targetWp != null) "${String.format(Locale.US, "%.1f", currentLeg.timeMinutes)}m" else "-")
-                MetricItem("Target", targetWp?.name ?: "Finished")
+                StatColumn("Bearing", if (currentLeg != null && targetWp != null) "${String.format(Locale.US, "%.0f", currentLeg.bearing)}°" else "-")
+                StatColumn("Distance", if (currentLeg != null && targetWp != null) "${String.format(Locale.US, "%.0f", currentLeg.distanceMeters)}m" else "-")
+                StatColumn("Time", if (currentLeg != null && targetWp != null) "${String.format(Locale.US, "%.1f", currentLeg.timeMinutes)}m" else "-")
+                StatColumn("Target", targetWp?.name ?: "Finished")
             }
         }
     }
@@ -866,8 +849,8 @@ fun OverallHikeStatsCard(viewModel: MainViewModel) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
     ) {
         Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
                 text = "Overall Hike Statistics",
@@ -875,23 +858,30 @@ fun OverallHikeStatsCard(viewModel: MainViewModel) {
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSecondaryContainer
             )
-            // Condensed two-line format:
-            // Distance: X.Xkm Altitude: Xm Time: hh:mm % XX%
-            Text(
-                text = String.format(Locale.US, "Distance: %.1fkm  Altitude: %.0fm  Time: %s  %% %d%%", distKm, altitudeM, timeStr, completionPct),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSecondaryContainer
-            )
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.15f))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                StatColumn("Distance", String.format(Locale.US, "%.1fkm", distKm), isSecondary = true)
+                StatColumn("Altitude", String.format(Locale.US, "%.0fm", altitudeM), isSecondary = true)
+                StatColumn("Time", timeStr, isSecondary = true)
+                StatColumn("Complete", "$completionPct%", isSecondary = true)
+            }
         }
     }
 }
 
 @Composable
-fun MetricItem(label: String, value: String) {
-    Column {
-        Text(text = label, fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
-        Text(text = value, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+fun StatColumn(label: String, value: String, isSecondary: Boolean = false) {
+    val labelColor = if (isSecondary) MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+    val valueColor = if (isSecondary) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onPrimaryContainer
+
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(text = label, fontSize = 11.sp, color = labelColor)
+        Text(text = value, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = valueColor)
     }
 }
 
@@ -900,12 +890,4 @@ fun formatHoursMinutes(totalMinutes: Double): String {
     val hours = totalMinsInt / 60
     val mins = totalMinsInt % 60
     return String.format(Locale.US, "%02d:%02d", hours, mins)
-}
-
-@Preview(showBackground = true)
-@Composable
-fun MainScreenPreview() {
-    SeeBeePeeTheme {
-        // MainScreen(...)
-    }
 }

@@ -10,6 +10,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.seebeepee.model.HikeState
 import com.example.seebeepee.model.RouteManager
 import com.example.seebeepee.model.Waypoint
 import com.example.seebeepee.util.AppPreferences
@@ -42,6 +43,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var coneAngle by mutableFloatStateOf(prefs.coneAngle)
         private set
+    var loopbackDistance by mutableDoubleStateOf(prefs.loopbackDistance)
+        private set
+    var lowSpeedCutoff by mutableDoubleStateOf(prefs.lowSpeedCutoff)
+        private set
+    var headingSmoothingAlpha by mutableDoubleStateOf(prefs.headingSmoothingAlpha)
+        private set
+    var persistenceFixes by mutableIntStateOf(prefs.persistenceFixes)
+        private set
+    var arrivalThreshold by mutableDoubleStateOf(prefs.arrivalThreshold)
+        private set
+    var nearMissThreshold by mutableDoubleStateOf(prefs.nearMissThreshold)
+        private set
 
     var showWaypointName by mutableStateOf(prefs.showWaypointName)
         private set
@@ -66,11 +79,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var elapsedTimeSeconds by mutableLongStateOf(0L)
         private set
 
+    var isHikeActive by mutableStateOf(prefs.isHikeActive || RouteManager.hikeState == HikeState.HIKING)
+        private set
+
     init {
         if (RouteManager.waypoints.isEmpty()) {
-            val sample = RouteParser.parseCsv(RouteParser.generateSampleIrishGridCsv())
-            RouteManager.loadWaypoints("Sample Hike (Irish Grid)", sample)
+            val loaded = RouteManager.loadSavedRoute(prefs, getApplication())
+            if (!loaded) {
+                val sampleCsv = RouteParser.generateSampleIrishGridCsv()
+                val sample = RouteParser.parseCsv(sampleCsv)
+                loadRoute("Sample Hike (Irish Grid)", sample, content = sampleCsv, filePath = null)
+            }
         }
+        restoreHikeState()
 
         viewModelScope.launch {
             while (true) {
@@ -78,6 +99,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 elapsedTimeSeconds++
             }
         }
+    }
+
+    fun startHike() {
+        RouteManager.startHike(prefs)
+        isHikeActive = true
+    }
+
+    fun stopHike() {
+        RouteManager.stopHike(prefs)
+        isHikeActive = false
+    }
+
+    fun finishHike(save: Boolean, context: android.content.Context? = null): java.io.File? {
+        val file = RouteManager.finishHike(prefs, save, context)
+        isHikeActive = false
+        return file
+    }
+
+    fun restoreHikeState() {
+        RouteManager.restoreHikeState(prefs)
+        isHikeActive = RouteManager.hikeState == HikeState.HIKING || prefs.isHikeActive
+    }
+
+    fun checkAndRestoreHikeState() {
+        restoreHikeState()
     }
 
     fun updateFlatPace(pace: Double) {
@@ -103,6 +149,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun updateConeAngle(angle: Float) {
         coneAngle = angle
         prefs.coneAngle = angle
+    }
+
+    fun updateLoopbackDistance(distance: Double) {
+        loopbackDistance = distance
+        prefs.loopbackDistance = distance
+    }
+
+    fun updateLowSpeedCutoff(cutoff: Double) {
+        lowSpeedCutoff = cutoff
+        prefs.lowSpeedCutoff = cutoff
+    }
+
+    fun updateHeadingSmoothingAlpha(alpha: Float) {
+        headingSmoothingAlpha = alpha.toDouble()
+        prefs.headingSmoothingAlpha = headingSmoothingAlpha
+    }
+    fun updatePersistenceFixes(fixes: Int) {
+        persistenceFixes = fixes
+        prefs.persistenceFixes = fixes
+    }
+
+    fun updateArrivalThreshold(threshold: Double) {
+        arrivalThreshold = threshold
+        prefs.arrivalThreshold = threshold
+    }
+
+    fun updateNearMissThreshold(threshold: Double) {
+        nearMissThreshold = threshold
+        prefs.nearMissThreshold = threshold
     }
 
     fun updateShowWaypointName(enabled: Boolean) {
@@ -145,9 +220,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         prefs.gridReferencePrecision = precision
     }
 
-    fun loadRoute(name: String, waypoints: List<Waypoint>) {
-        RouteManager.loadWaypoints(name, waypoints)
+    fun loadRoute(
+        name: String,
+        waypoints: List<Waypoint>,
+        content: String? = null,
+        filePath: String? = null,
+        fileUri: String? = null
+    ) {
+        val displayName = if (!fileUri.isNullOrEmpty() && fileUri.startsWith("content://")) {
+            RouteParser.extractRouteNameFromUri(getApplication(), fileUri, fallbackName = name)
+        } else {
+            name.substringBeforeLast(".")
+        }
+
+        val routeContent = content ?: if (waypoints.isNotEmpty()) {
+            waypoints.joinToString("\n", prefix = "Name,Easting,Northing,Altitude\n") { wp ->
+                "${wp.name},${wp.x.toLong()},${wp.y.toLong()},${wp.altitude.toLong()}"
+            }
+        } else null
+
+        RouteManager.loadWaypoints(displayName, waypoints, content = routeContent, filePath = filePath, fileUri = fileUri)
         elapsedTimeSeconds = 0L
+
+        prefs.lastRouteName = displayName
+        prefs.lastFilePath = filePath
+        prefs.lastFileUri = fileUri
+        prefs.lastRouteContent = routeContent
     }
 
     val legMetrics: List<LegMetric>

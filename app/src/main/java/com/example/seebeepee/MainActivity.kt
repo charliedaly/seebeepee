@@ -18,11 +18,13 @@ import androidx.compose.ui.Modifier
 import androidx.core.app.ActivityCompat
 import androidx.navigation3.runtime.NavEntry
 import androidx.navigation3.ui.NavDisplay
+import com.example.seebeepee.model.HikeState
 import com.example.seebeepee.model.RouteManager
 import com.example.seebeepee.service.HikingForegroundService
 import com.example.seebeepee.ui.MainScreen
 import com.example.seebeepee.ui.MapScreen
 import com.example.seebeepee.ui.theme.SeeBeePeeTheme
+import com.example.seebeepee.util.AppPreferences
 import com.example.seebeepee.util.TtsManager
 import com.example.seebeepee.viewmodel.MainViewModel
 import kotlinx.serialization.Serializable
@@ -48,7 +50,7 @@ class MainActivity : ComponentActivity() {
 
         // Give the TTS engine a tiny window to bind, then speak a verification phrase
         window.decorView.postDelayed({
-            ttsManager.speak("TTS engine initialized and ready.")
+            ttsManager.speak("Welcome. Press the start button when you are ready to hike and at the first waypoint.")
         }, 1500)
 
         checkLocationPermissionsAndStartTracking()
@@ -80,6 +82,16 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.checkAndRestoreHikeState()
+        val prefs = AppPreferences(applicationContext)
+        if (prefs.isHikeActive) {
+            RouteManager.hikeState = HikeState.HIKING
+            checkLocationPermissionsAndStartTracking(startService = true)
         }
     }
 

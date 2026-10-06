@@ -413,6 +413,78 @@ object CoordinateUtils {
         return angle
     }
 
+    /**
+     * Normalizes an angle difference to the range [-180.0, 180.0] degrees.
+     */
+    fun normalizeAngle180(angle: Double): Double {
+        var a = (angle + 180.0) % 360.0
+        if (a < 0) a += 360.0
+        return a - 180.0
+    }
+
+    /**
+     * Computes the angular deviation ΔB = bHiker - bTarget normalized to [-180.0, 180.0] degrees.
+     */
+    fun computeAngularDeviation(bHiker: Double, bTarget: Double): Double {
+        return normalizeAngle180(bHiker - bTarget)
+    }
+
+    /**
+     * Computes movement bearing by looking back along recorded breadcrumbs until cumulative distance
+     * exceeds [loopbackDistanceMeters] (default 10 meters).
+     * Returns null if fewer than 2 breadcrumbs exist or if movement distance is zero.
+     */
+    fun calculateLoopbackBearing(breadcrumbs: List<Breadcrumb>, loopbackDistanceMeters: Double = 10.0): Double? {
+        if (breadcrumbs.size < 2) return null
+        val curr = breadcrumbs.last()
+        var accumulatedDist = 0.0
+        var lookbackBc = breadcrumbs[breadcrumbs.size - 2]
+
+        for (i in breadcrumbs.size - 2 downTo 0) {
+            val p1 = breadcrumbs[i]
+            val p2 = breadcrumbs[i + 1]
+            val segDist = calculateDistance(p1.x, p1.y, p2.x, p2.y)
+            accumulatedDist += segDist
+            lookbackBc = p1
+            if (accumulatedDist >= loopbackDistanceMeters) {
+                break
+            }
+        }
+
+        val directDist = calculateDistance(lookbackBc.x, lookbackBc.y, curr.x, curr.y)
+        if (directDist > 0.0) {
+            return calculateBearing(lookbackBc.x, lookbackBc.y, curr.x, curr.y)
+        }
+        return null
+    }
+
+    /**
+     * Calculates the hiker's current movement bearing from recent breadcrumbs.
+     * Searches backwards from the latest breadcrumb to find a previous breadcrumb at least [minDistanceMeters] away.
+     * Returns null if fewer than 2 breadcrumbs exist or if movement distance is negligible.
+     */
+    fun calculateHikerBearing(breadcrumbs: List<Breadcrumb>, minDistanceMeters: Double = 1.0): Double? {
+        return calculateLoopbackBearing(breadcrumbs, minDistanceMeters)
+    }
+
+    /**
+     * Calculates the hiker's movement bearing using the current location (latest breadcrumb)
+     * and the breadcrumb point 3 points further back (index breadcrumbs.size - 4).
+     * If fewer than 4 breadcrumbs exist, falls back to breadcrumbs.first() if size >= 2.
+     * Returns null if fewer than 2 breadcrumbs exist or if movement distance is zero.
+     */
+    fun calculateStabilizedHikerBearing(breadcrumbs: List<Breadcrumb>): Double? {
+        if (breadcrumbs.size < 2) return null
+        val curr = breadcrumbs.last()
+        val prevIndex = if (breadcrumbs.size >= 4) breadcrumbs.size - 4 else 0
+        val prev = breadcrumbs[prevIndex]
+        val dist = calculateDistance(prev.x, prev.y, curr.x, curr.y)
+        if (dist > 0.0) {
+            return calculateBearing(prev.x, prev.y, curr.x, curr.y)
+        }
+        return null
+    }
+
     fun calculateSpeed(b1: Breadcrumb, b2: Breadcrumb): Double {
         val distMeters = calculateDistance(b1.x, b1.y, b2.x, b2.y)
         val timeSec = (b2.timestamp - b1.timestamp) / 1000.0
@@ -421,6 +493,38 @@ object CoordinateUtils {
         return speedMps * 3.6 // km/h
     }
 
+    /**
+     * Calculates recent hiker speed (km/h) over recent breadcrumbs within [windowMeters] lookback window.
+     * Returns 0.0 if fewer than 2 breadcrumbs exist or time elapsed is <= 0.
+     */
+    fun calculateRecentSpeed(breadcrumbs: List<Breadcrumb>, windowMeters: Double = 10.0): Double {
+        if (breadcrumbs.size < 2) return 0.0
+        val curr = breadcrumbs.last()
+        var accumulatedDist = 0.0
+        var lookbackBc = breadcrumbs[breadcrumbs.size - 2]
+
+        for (i in breadcrumbs.size - 2 downTo 0) {
+            val p1 = breadcrumbs[i]
+            val p2 = breadcrumbs[i + 1]
+            val segDist = calculateDistance(p1.x, p1.y, p2.x, p2.y)
+            accumulatedDist += segDist
+            lookbackBc = p1
+            if (accumulatedDist >= windowMeters) {
+                break
+            }
+        }
+
+        val timeSec = (curr.timestamp - lookbackBc.timestamp) / 1000.0
+        if (timeSec <= 0.0) return 0.0
+        val distMeters = calculateDistance(lookbackBc.x, lookbackBc.y, curr.x, curr.y)
+        val speedMps = distMeters / timeSec
+        return speedMps * 3.6 // km/h
+    }
+
+    /**
+     * Formats metric X and Y coordinates as a concise 6-digit grid reference (3 digits Easting + 3 digits Northing)
+     * without the zone letter prefix (e.g., "880888"). Used specifically for TTS audio status messages.
+     */
     fun formatGridReference6Digit(x: Double, y: Double): String {
         val east = (((x % 100000.0) + 100000.0) % 100000.0 / 100.0).toInt().coerceIn(0, 999)
         val north = (((y % 100000.0) + 100000.0) % 100000.0 / 100.0).toInt().coerceIn(0, 999)

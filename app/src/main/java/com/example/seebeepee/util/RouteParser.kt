@@ -1,10 +1,56 @@
 package com.example.seebeepee.util
 
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
 import com.example.seebeepee.model.Waypoint
 import java.io.BufferedReader
 import java.io.StringReader
 
 object RouteParser {
+    /**
+     * Queries OpenableColumns.DISPLAY_NAME via context.contentResolver when given a content:// URI.
+     * Extracts the display name and strips the extension (e.g. "glounthaune.csv" -> "glounthaune").
+     */
+    fun extractRouteNameFromUri(context: Context, uri: Uri, fallbackName: String? = null): String {
+        var displayName: String? = null
+        if (uri.scheme == "content") {
+            try {
+                context.contentResolver.query(
+                    uri,
+                    arrayOf(OpenableColumns.DISPLAY_NAME),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val columnIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (columnIndex != -1) {
+                            displayName = cursor.getString(columnIndex)
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // Fallback to uri.lastPathSegment or fallbackName if query fails
+            }
+        }
+        if (displayName.isNullOrBlank()) {
+            displayName = fallbackName ?: uri.lastPathSegment
+        }
+        if (displayName.isNullOrBlank()) {
+            displayName = "Imported Route"
+        }
+        return displayName.substringBeforeLast(".")
+    }
+
+    fun extractRouteNameFromUri(context: Context, uriString: String, fallbackName: String? = null): String {
+        return try {
+            val uri = Uri.parse(uriString)
+            extractRouteNameFromUri(context, uri, fallbackName)
+        } catch (e: Exception) {
+            (fallbackName ?: uriString.substringAfterLast("/")).substringBeforeLast(".")
+        }
+    }
     /**
      * Parses CSV route content into a list of Waypoints.
      * Supports columns: grid_ref/grid/location, latitude/lat, longitude/lon, altitude/alt/elevation/ele, name/title.
@@ -24,6 +70,7 @@ object RouteParser {
         val latIdx = headers.indexOfFirst { it in listOf("latitude", "lat") }
         val lonIdx = headers.indexOfFirst { it in listOf("longitude", "lon") }
         val altIdx = headers.indexOfFirst { it in listOf("altitude", "alt", "elevation", "ele") }
+        val thresholdIdx = headers.indexOfFirst { it in listOf("threshold", "reach_threshold", "radius") }
 
         for (i in 1 until lines.size) {
             val line = lines[i].trim()
@@ -44,13 +91,19 @@ object RouteParser {
                 0.0
             }
 
+            val threshold = if (thresholdIdx >= 0 && thresholdIdx < tokens.size) {
+                tokens[thresholdIdx].trim().removeSurrounding("\"", "\"").toDoubleOrNull()
+            } else {
+                null
+            }
+
             val waypoint = if (gridIdx >= 0 && gridIdx < tokens.size && tokens[gridIdx].isNotBlank()) {
                 val gridRef = tokens[gridIdx].trim().removeSurrounding("\"", "\"")
-                Waypoint.fromGridReference(name, gridRef, alt)
+                Waypoint.fromGridReference(name, gridRef, alt, threshold)
             } else if (latIdx >= 0 && lonIdx >= 0 && latIdx < tokens.size && lonIdx < tokens.size) {
                 val lat = tokens[latIdx].trim().removeSurrounding("\"", "\"").toDoubleOrNull() ?: 0.0
                 val lon = tokens[lonIdx].trim().removeSurrounding("\"", "\"").toDoubleOrNull() ?: 0.0
-                Waypoint.fromLatLon(name, lat, lon, alt)
+                Waypoint.fromLatLon(name, lat, lon, alt, threshold)
             } else {
                 continue
             }

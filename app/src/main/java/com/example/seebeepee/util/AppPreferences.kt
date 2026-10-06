@@ -14,6 +14,18 @@ class AppPreferences(context: Context) {
         get() = prefs.getString("last_file_path", null)
         set(value) = prefs.edit().putString("last_file_path", value).apply()
 
+    var lastFileUri: String?
+        get() = prefs.getString("last_file_uri", null)
+        set(value) = prefs.edit().putString("last_file_uri", value).apply()
+
+    var lastRouteContent: String?
+        get() = prefs.getString("last_route_content", null)
+        set(value) = prefs.edit().putString("last_route_content", value).apply()
+
+    var lastRouteName: String?
+        get() = prefs.getString("last_route_name", null)
+        set(value) = prefs.edit().putString("last_route_name", value).apply()
+
     var flatPace: Double
         get() = prefs.getFloat("flat_pace", 20.0f).toDouble()
         set(value) = prefs.edit().putFloat("flat_pace", value.toFloat()).apply()
@@ -26,8 +38,33 @@ class AppPreferences(context: Context) {
         get() = prefs.getFloat("cone_angle", 10.0f)
         set(value) = prefs.edit().putFloat("cone_angle", value).apply()
 
+    var loopbackDistance: Double
+        get() = prefs.getFloat("loopback_distance", 10.0f).toDouble()
+        set(value) = prefs.edit().putFloat("loopback_distance", value.toFloat()).apply()
+
+    var lowSpeedCutoff: Double
+        get() = prefs.getFloat("low_speed_cutoff", 1.2f).toDouble()
+        set(value) = prefs.edit().putFloat("low_speed_cutoff", value.toFloat()).apply()
+
+    var headingSmoothingAlpha: Double
+        get() = prefs.getFloat("heading_smoothing_alpha", 0.3f).toDouble()
+        set(value) = prefs.edit().putFloat("heading_smoothing_alpha", value.toFloat()).apply()
+
+
+    var persistenceFixes: Int
+        get() = prefs.getInt("persistence_fixes", 2)
+        set(value) = prefs.edit().putInt("persistence_fixes", value).apply()
+
+    var arrivalThreshold: Double
+        get() = prefs.getFloat("arrival_threshold", 20.0f).toDouble()
+        set(value) = prefs.edit().putFloat("arrival_threshold", value.toFloat()).apply()
+
+    var nearMissThreshold: Double
+        get() = prefs.getFloat("near_miss_threshold", 40.0f).toDouble()
+        set(value) = prefs.edit().putFloat("near_miss_threshold", value.toFloat()).apply()
+
     var voiceAlertsEnabled: Boolean
-        get() = prefs.getBoolean("voice_alerts_enabled", false)
+        get() = prefs.getBoolean("voice_alerts_enabled", true)
         set(value) = prefs.edit().putBoolean("voice_alerts_enabled", value).apply()
 
     var autoTrack: Boolean
@@ -65,4 +102,8 @@ class AppPreferences(context: Context) {
     var gridReferencePrecision: Int
         get() = prefs.getInt("grid_reference_precision", 6)
         set(value) = prefs.edit().putInt("grid_reference_precision", value).apply()
+
+    var isHikeActive: Boolean
+        get() = prefs.getBoolean("is_hike_active", false)
+        set(value) = prefs.edit().putBoolean("is_hike_active", value).apply()
 }

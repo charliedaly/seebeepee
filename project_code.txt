@@ -1,172 +1,5 @@
 
 
-// --- FILE: app/src/androidTest/java/com/example/seebeepee/ExampleInstrumentedTest.kt ---
-
-package com.example.seebeepee
-
-import androidx.test.platform.app.InstrumentationRegistry
-import androidx.test.ext.junit.runners.AndroidJUnit4
-
-import org.junit.Test
-import org.junit.runner.RunWith
-
-import org.junit.Assert.*
-
-/**
- * Instrumented test, which will execute on an Android device.
- *
- * See [testing documentation](http://d.android.com/tools/testing).
- */
-@RunWith(AndroidJUnit4::class)
-class ExampleInstrumentedTest {
-    @Test
-    fun useAppContext() {
-        // Context of the app under test.
-        val appContext = InstrumentationRegistry.getInstrumentation().targetContext
-        assertEquals("com.example.seebeepee", appContext.packageName)
-    }
-}
-
-// --- FILE: app/src/test/java/com/example/seebeepee/RouteAndSpatialTest.kt ---
-
-package com.example.seebeepee
-
-import com.example.seebeepee.model.Breadcrumb
-import com.example.seebeepee.model.HikeState
-import com.example.seebeepee.model.RouteManager
-import com.example.seebeepee.model.Waypoint
-import com.example.seebeepee.util.CoordinateUtils
-import com.example.seebeepee.util.NaismithEngine
-import com.example.seebeepee.util.RouteParser
-import org.junit.Assert.*
-import org.junit.Test
-
-class RouteAndSpatialTest {
-
-    @Test
-    fun testGridReferenceParsing() {
-        val (x, y) = CoordinateUtils.parseGridReference("V860870")
-        assertEquals(86000.0, x, 0.01)
-        assertEquals(87000.0, y, 0.01)
-
-        val (x2, y2) = CoordinateUtils.parseGridReference("V 860 870")
-        assertEquals(86000.0, x2, 0.01)
-        assertEquals(87000.0, y2, 0.01)
-
-        val (x3, y3) = CoordinateUtils.parseGridReference("V860870")
-        assertEquals(86000.0, x3, 0.01)
-    }
-
-    @Test
-    fun testGridReferenceFormatting() {
-        val x = 86000.0
-        val y = 87000.0
-        assertEquals("860870", CoordinateUtils.formatGridReference6Digit(x, y))
-        assertEquals("V860870", CoordinateUtils.formatGridReferenceWithLetter(x, y, 6))
-        assertEquals("V86008700", CoordinateUtils.formatGridReferenceWithLetter(x, y, 8))
-        assertEquals("V8600087000", CoordinateUtils.formatGridReferenceWithLetter(x, y, 10))
-    }
-
-    @Test
-    fun testLatLonMetricConversion() {
-        val lat = 53.3498
-        val lon = -6.2603
-        val (x, y) = CoordinateUtils.latLonToMetric(lat, lon)
-        val (backLat, backLon) = CoordinateUtils.metricToLatLon(x, y)
-        assertEquals(lat, backLat, 0.0005)
-        assertEquals(lon, backLon, 0.0005)
-    }
-
-    @Test
-    fun testSpatialMath() {
-        val dist = CoordinateUtils.calculateDistance(0.0, 0.0, 300.0, 400.0)
-        assertEquals(500.0, dist, 0.01)
-
-        val bearing = CoordinateUtils.calculateBearing(0.0, 0.0, 0.0, 100.0)
-        assertEquals(0.0, bearing, 0.1) // North
-
-        val b1 = Breadcrumb(0.0, 0.0, 10.0, 1000L)
-        val b2 = Breadcrumb(10.0, 0.0, 10.0, 2000L) // 10 meters in 1 second = 10 m/s = 36 km/h
-        val speed = CoordinateUtils.calculateSpeed(b1, b2)
-        assertEquals(36.0, speed, 0.1)
-    }
-
-    @Test
-    fun testNaismithEngine() {
-        // 5 km, 200m climb. Flat pace 20 min/km = 100 min. Climb penalty 1 min per 10m (200m / 10 = 20 min) = 120 min.
-        val time = NaismithEngine.estimateHikingTime(5000.0, 200.0, 20.0, 1.0)
-        assertEquals(120.0, time, 0.01)
-    }
-
-    @Test
-    fun testRouteParserAndSampleCsv() {
-        val sampleCsv = RouteParser.generateSampleIrishGridCsv()
-        assertNotNull(sampleCsv)
-        assertTrue(sampleCsv.contains("V860870"))
-
-        val waypoints = RouteParser.parseCsv(sampleCsv)
-        assertEquals(5, waypoints.size)
-        assertEquals("Start", waypoints[0].name)
-        assertEquals(86000.0, waypoints[0].x, 0.01)
-    }
-
-    @Test
-    fun testRouteManager() {
-        RouteManager.clearBreadcrumbs()
-        assertEquals(0, RouteManager.breadcrumbs.size)
-
-        val sampleCsv = RouteParser.generateSampleIrishGridCsv()
-        val waypoints = RouteParser.parseCsv(sampleCsv)
-        RouteManager.loadWaypoints("TestRoute", waypoints)
-
-        assertEquals("TestRoute", RouteManager.currentRouteName)
-        assertEquals(5, RouteManager.waypoints.size)
-        assertEquals(HikeState.ROUTE_LOADED, RouteManager.hikeState)
-
-        val bc = Breadcrumb.fromGps(53.3, -6.2, 100.0, System.currentTimeMillis())
-        RouteManager.addBreadcrumb(bc)
-        assertEquals(1, RouteManager.breadcrumbs.size)
-
-        RouteManager.logError("Test error log")
-        assertTrue(RouteManager.debugLogs.isNotEmpty())
-    }
-
-    @Test
-    fun testNaismithLegCalculations() {
-        val sampleCsv = RouteParser.generateSampleIrishGridCsv()
-        val waypoints = RouteParser.parseCsv(sampleCsv)
-        RouteManager.loadWaypoints("NaismithTestRoute", waypoints)
-
-        val w1 = waypoints[0]
-        val w2 = waypoints[1]
-        val dist = CoordinateUtils.calculateDistance(w1.x, w1.y, w2.x, w2.y)
-        val climb = maxOf(0.0, w2.altitude - w1.altitude)
-        val time = NaismithEngine.estimateHikingTime(dist, climb, 20.0, 1.0)
-        assertTrue(time > 0.0)
-    }
-}
-
-
-// --- FILE: app/src/test/java/com/example/seebeepee/ExampleUnitTest.kt ---
-
-package com.example.seebeepee
-
-import org.junit.Test
-
-import org.junit.Assert.*
-
-/**
- * Example local unit test, which will execute on the development machine (host).
- *
- * See [testing documentation](http://d.android.com/tools/testing).
- */
-class ExampleUnitTest {
-    @Test
-    fun addition_isCorrect() {
-        assertEquals(4, 2 + 2)
-    }
-}
-
 // --- FILE: app/src/main/java/com/example/seebeepee/MainActivity.kt ---
 
 package com.example.seebeepee
@@ -189,11 +22,14 @@ import androidx.compose.ui.Modifier
 import androidx.core.app.ActivityCompat
 import androidx.navigation3.runtime.NavEntry
 import androidx.navigation3.ui.NavDisplay
+import com.example.seebeepee.model.HikeState
 import com.example.seebeepee.model.RouteManager
 import com.example.seebeepee.service.HikingForegroundService
 import com.example.seebeepee.ui.MainScreen
 import com.example.seebeepee.ui.MapScreen
 import com.example.seebeepee.ui.theme.SeeBeePeeTheme
+import com.example.seebeepee.util.AppPreferences
+import com.example.seebeepee.util.TtsManager
 import com.example.seebeepee.viewmodel.MainViewModel
 import kotlinx.serialization.Serializable
 
@@ -207,10 +43,20 @@ sealed interface AppScreen {
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
+    private lateinit var ttsManager: TtsManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Initialize TtsManager for independent startup test
+        ttsManager = TtsManager(applicationContext)
+
+        // Give the TTS engine a tiny window to bind, then speak a verification phrase
+        window.decorView.postDelayed({
+            ttsManager.speak("Welcome. Press the start button when you are ready to hike and at the first waypoint.")
+        }, 1500)
+
         checkLocationPermissionsAndStartTracking()
 
         setContent {
@@ -243,6 +89,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        viewModel.checkAndRestoreHikeState()
+        val prefs = AppPreferences(applicationContext)
+        if (prefs.isHikeActive) {
+            RouteManager.hikeState = HikeState.HIKING
+            checkLocationPermissionsAndStartTracking(startService = true)
+        }
+    }
+
     fun checkLocationPermissionsAndStartTracking(startService: Boolean = false) {
         try {
             val hasFine = ActivityCompat.checkSelfPermission(
@@ -265,7 +121,8 @@ class MainActivity : ComponentActivity() {
             val locationManager = getSystemService(LOCATION_SERVICE) as? LocationManager
             val isGpsOn = locationManager?.let {
                 it.isProviderEnabled(LocationManager.GPS_PROVIDER) || it.isProviderEnabled(
-                    LocationManager.NETWORK_PROVIDER)
+                    LocationManager.NETWORK_PROVIDER
+                )
             } ?: false
 
             if (!hasFine && !hasCoarse || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotification)) {
@@ -332,6 +189,207 @@ class MainActivity : ComponentActivity() {
             RouteManager.logError("Exception caught when starting foreground service from MainActivity: ${e.message}")
         }
     }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        ttsManager.shutdown()
+    }
+}
+
+
+// --- FILE: app/src/main/java/com/example/seebeepee/util/SaveBreadCrumbs.kt ---
+
+package com.example.seebeepee.util
+
+import android.content.Context
+import android.net.Uri
+import android.os.Environment
+import android.os.Handler
+import android.os.Looper
+import android.widget.Toast
+import androidx.documentfile.provider.DocumentFile
+import com.example.seebeepee.model.Breadcrumb
+import com.example.seebeepee.model.RouteManager
+import java.io.File
+import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
+
+/**
+ * Converts stored grid breadcrumbs to Lat/Lon GPX format and saves them to either
+ * the directory where the active route file was originally loaded from, or the public
+ * Downloads directory, or the app documents directory as fallback.
+ *
+ * Displays toast feedback confirming the exact location (e.g. "Saved to Downloads: Carrauntoohil_20260324_143000.gpx").
+ *
+ * Filename format: <RouteName>_<YYYYMMDD_HHMMSS>.gpx
+ */
+fun saveBreadcrumbsToGpx(
+    context: Context,
+    breadcrumbs: List<Breadcrumb> = RouteManager.breadcrumbs,
+    routeName: String = RouteManager.currentRouteName,
+    filePath: String? = RouteManager.currentFilePath,
+    fileUri: String? = RouteManager.currentFileUri
+): File? {
+    if (breadcrumbs.isEmpty()) return null
+
+    // Route filename minus extension
+    val cleanRouteName = if (routeName.isBlank() || routeName.equals("No Route Loaded", ignoreCase = true)) {
+        "Hike"
+    } else {
+        routeName.substringBeforeLast(".").ifBlank { "Hike" }
+    }
+
+    // Filename: <RouteName>_<YYYYMMDD_HHMMSS>.gpx
+    val dateFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+    val timestampStr = dateFormat.format(Date())
+    val filename = "${cleanRouteName}_$timestampStr.gpx"
+
+    // Build valid GPX XML content
+    val gpxBuilder = StringBuilder().apply {
+        append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+        append("<gpx version=\"1.1\" creator=\"SeeBeePee\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n")
+        append("  <trk>\n")
+        append("    <name>$cleanRouteName</name>\n")
+        append("    <trkseg>\n")
+
+        val timeFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+
+        for (bc in breadcrumbs) {
+            // Convert grid coordinates (x, y) back to Latitude and Longitude via CoordinateUtils
+            val (lat, lon) = CoordinateUtils.metricToLatLon(bc.x, bc.y)
+            val timeIso = timeFormat.format(Date(bc.timestamp))
+
+            append("      <trkpt lat=\"$lat\" lon=\"$lon\">\n")
+            if (bc.altitude != 0.0) {
+                append("        <ele>${bc.altitude}</ele>\n")
+            }
+            append("        <time>$timeIso</time>\n")
+            append("      </trkpt>\n")
+        }
+
+        append("    </trkseg>\n")
+        append("  </trk>\n")
+        append("</gpx>")
+    }
+
+    val gpxBytes = gpxBuilder.toString().toByteArray(Charsets.UTF_8)
+    var savedFile: File? = null
+    var folderDisplayName = "Downloads"
+
+    // 1. Attempt original directory using SAF DocumentFile if fileUri is present
+    if (!fileUri.isNullOrEmpty()) {
+        try {
+            val parsedUri = Uri.parse(fileUri)
+            val singleDoc = DocumentFile.fromSingleUri(context, parsedUri)
+            val parentDoc = singleDoc?.parentFile
+            if (parentDoc != null && parentDoc.canWrite()) {
+                val newDoc = parentDoc.createFile("application/gpx+xml", filename)
+                if (newDoc != null) {
+                    context.contentResolver.openOutputStream(newDoc.uri)?.use { outputStream ->
+                        outputStream.write(gpxBytes)
+                    }
+                    val dirName = parentDoc.name ?: "Downloads"
+                    folderDisplayName = if (dirName.equals("Download", ignoreCase = true)) "Downloads" else dirName
+                    RouteManager.logError("Saved ${breadcrumbs.size} breadcrumbs to original directory via SAF: ${newDoc.uri}")
+                    val localFile = if (newDoc.uri.scheme == "file") File(newDoc.uri.path ?: "") else File(filename)
+                    savedFile = localFile
+                }
+            }
+        } catch (e: Exception) {
+            RouteManager.logError("Failed saving to SAF parent directory: ${e.message}")
+        }
+    }
+
+    // 1b. Attempt original directory using File if filePath is present and writable
+    if (savedFile == null && !filePath.isNullOrEmpty()) {
+        try {
+            val routeFile = File(filePath)
+            val parentDir = routeFile.parentFile
+            if (parentDir != null && parentDir.exists() && parentDir.isDirectory && parentDir.canWrite()) {
+                val gpxFile = File(parentDir, filename)
+                FileOutputStream(gpxFile).use { outputStream ->
+                    outputStream.write(gpxBytes)
+                }
+                folderDisplayName = if (parentDir.name.equals("Download", ignoreCase = true)) "Downloads" else parentDir.name
+                RouteManager.logError("Saved ${breadcrumbs.size} breadcrumbs to original directory GPX file: ${gpxFile.absolutePath}")
+                savedFile = gpxFile
+            }
+        } catch (e: Exception) {
+            RouteManager.logError("Failed saving to original directory '$filePath': ${e.message}")
+        }
+    }
+
+    // 2. Attempt public Downloads directory
+    if (savedFile == null) {
+        try {
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if (downloadsDir != null) {
+                if (!downloadsDir.exists()) {
+                    downloadsDir.mkdirs()
+                }
+                val gpxFile = File(downloadsDir, filename)
+                FileOutputStream(gpxFile).use { outputStream ->
+                    outputStream.write(gpxBytes)
+                }
+                folderDisplayName = "Downloads"
+                RouteManager.logError("Saved ${breadcrumbs.size} breadcrumbs to public Downloads GPX file: ${gpxFile.absolutePath}")
+                savedFile = gpxFile
+            }
+        } catch (e: Exception) {
+            RouteManager.logError("Failed to save to public Downloads directory: ${e.message}")
+        }
+    }
+
+    // 3. Fallback to app documents directory
+    if (savedFile == null) {
+        try {
+            val fallbackDir = getAppDocumentsDirectory(context)
+            val fallbackFile = File(fallbackDir, filename)
+            FileOutputStream(fallbackFile).use { outputStream ->
+                outputStream.write(gpxBytes)
+            }
+            folderDisplayName = if (fallbackDir.name.equals("Download", ignoreCase = true)) "Downloads" else fallbackDir.name
+            RouteManager.logError("Saved ${breadcrumbs.size} breadcrumbs to fallback GPX file: ${fallbackFile.absolutePath}")
+            savedFile = fallbackFile
+        } catch (fallbackEx: Exception) {
+            RouteManager.logError("Failed fallback GPX save: ${fallbackEx.message}")
+            return null
+        }
+    }
+
+    // Display user feedback Toast
+    val finalFileName = savedFile?.name.orEmpty().ifEmpty { filename }
+    val feedbackMsg = "Saved to $folderDisplayName: $finalFileName"
+    try {
+        val mainLooper = Looper.getMainLooper()
+        if (mainLooper != null) {
+            Handler(mainLooper).post {
+                try {
+                    Toast.makeText(context, feedbackMsg, Toast.LENGTH_LONG).show()
+                } catch (e: Exception) {
+                    // Ignore Toast errors in non-UI or unit test environments
+                }
+            }
+        }
+    } catch (e: Exception) {
+        // Ignore looper errors in unit test environments
+    }
+
+    return savedFile
+}
+
+private fun getAppDocumentsDirectory(context: Context): File {
+    val docsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
+        ?: File(context.filesDir, "documents")
+    if (!docsDir.exists()) {
+        docsDir.mkdirs()
+    }
+    return docsDir
 }
 
 
@@ -752,6 +810,78 @@ object CoordinateUtils {
         return angle
     }
 
+    /**
+     * Normalizes an angle difference to the range [-180.0, 180.0] degrees.
+     */
+    fun normalizeAngle180(angle: Double): Double {
+        var a = (angle + 180.0) % 360.0
+        if (a < 0) a += 360.0
+        return a - 180.0
+    }
+
+    /**
+     * Computes the angular deviation ΔB = bHiker - bTarget normalized to [-180.0, 180.0] degrees.
+     */
+    fun computeAngularDeviation(bHiker: Double, bTarget: Double): Double {
+        return normalizeAngle180(bHiker - bTarget)
+    }
+
+    /**
+     * Computes movement bearing by looking back along recorded breadcrumbs until cumulative distance
+     * exceeds [loopbackDistanceMeters] (default 10 meters).
+     * Returns null if fewer than 2 breadcrumbs exist or if movement distance is zero.
+     */
+    fun calculateLoopbackBearing(breadcrumbs: List<Breadcrumb>, loopbackDistanceMeters: Double = 10.0): Double? {
+        if (breadcrumbs.size < 2) return null
+        val curr = breadcrumbs.last()
+        var accumulatedDist = 0.0
+        var lookbackBc = breadcrumbs[breadcrumbs.size - 2]
+
+        for (i in breadcrumbs.size - 2 downTo 0) {
+            val p1 = breadcrumbs[i]
+            val p2 = breadcrumbs[i + 1]
+            val segDist = calculateDistance(p1.x, p1.y, p2.x, p2.y)
+            accumulatedDist += segDist
+            lookbackBc = p1
+            if (accumulatedDist >= loopbackDistanceMeters) {
+                break
+            }
+        }
+
+        val directDist = calculateDistance(lookbackBc.x, lookbackBc.y, curr.x, curr.y)
+        if (directDist > 0.0) {
+            return calculateBearing(lookbackBc.x, lookbackBc.y, curr.x, curr.y)
+        }
+        return null
+    }
+
+    /**
+     * Calculates the hiker's current movement bearing from recent breadcrumbs.
+     * Searches backwards from the latest breadcrumb to find a previous breadcrumb at least [minDistanceMeters] away.
+     * Returns null if fewer than 2 breadcrumbs exist or if movement distance is negligible.
+     */
+    fun calculateHikerBearing(breadcrumbs: List<Breadcrumb>, minDistanceMeters: Double = 1.0): Double? {
+        return calculateLoopbackBearing(breadcrumbs, minDistanceMeters)
+    }
+
+    /**
+     * Calculates the hiker's movement bearing using the current location (latest breadcrumb)
+     * and the breadcrumb point 3 points further back (index breadcrumbs.size - 4).
+     * If fewer than 4 breadcrumbs exist, falls back to breadcrumbs.first() if size >= 2.
+     * Returns null if fewer than 2 breadcrumbs exist or if movement distance is zero.
+     */
+    fun calculateStabilizedHikerBearing(breadcrumbs: List<Breadcrumb>): Double? {
+        if (breadcrumbs.size < 2) return null
+        val curr = breadcrumbs.last()
+        val prevIndex = if (breadcrumbs.size >= 4) breadcrumbs.size - 4 else 0
+        val prev = breadcrumbs[prevIndex]
+        val dist = calculateDistance(prev.x, prev.y, curr.x, curr.y)
+        if (dist > 0.0) {
+            return calculateBearing(prev.x, prev.y, curr.x, curr.y)
+        }
+        return null
+    }
+
     fun calculateSpeed(b1: Breadcrumb, b2: Breadcrumb): Double {
         val distMeters = calculateDistance(b1.x, b1.y, b2.x, b2.y)
         val timeSec = (b2.timestamp - b1.timestamp) / 1000.0
@@ -760,6 +890,38 @@ object CoordinateUtils {
         return speedMps * 3.6 // km/h
     }
 
+    /**
+     * Calculates recent hiker speed (km/h) over recent breadcrumbs within [windowMeters] lookback window.
+     * Returns 0.0 if fewer than 2 breadcrumbs exist or time elapsed is <= 0.
+     */
+    fun calculateRecentSpeed(breadcrumbs: List<Breadcrumb>, windowMeters: Double = 10.0): Double {
+        if (breadcrumbs.size < 2) return 0.0
+        val curr = breadcrumbs.last()
+        var accumulatedDist = 0.0
+        var lookbackBc = breadcrumbs[breadcrumbs.size - 2]
+
+        for (i in breadcrumbs.size - 2 downTo 0) {
+            val p1 = breadcrumbs[i]
+            val p2 = breadcrumbs[i + 1]
+            val segDist = calculateDistance(p1.x, p1.y, p2.x, p2.y)
+            accumulatedDist += segDist
+            lookbackBc = p1
+            if (accumulatedDist >= windowMeters) {
+                break
+            }
+        }
+
+        val timeSec = (curr.timestamp - lookbackBc.timestamp) / 1000.0
+        if (timeSec <= 0.0) return 0.0
+        val distMeters = calculateDistance(lookbackBc.x, lookbackBc.y, curr.x, curr.y)
+        val speedMps = distMeters / timeSec
+        return speedMps * 3.6 // km/h
+    }
+
+    /**
+     * Formats metric X and Y coordinates as a concise 6-digit grid reference (3 digits Easting + 3 digits Northing)
+     * without the zone letter prefix (e.g., "880888"). Used specifically for TTS audio status messages.
+     */
     fun formatGridReference6Digit(x: Double, y: Double): String {
         val east = (((x % 100000.0) + 100000.0) % 100000.0 / 100.0).toInt().coerceIn(0, 999)
         val north = (((y % 100000.0) + 100000.0) % 100000.0 / 100.0).toInt().coerceIn(0, 999)
@@ -819,9 +981,11 @@ import android.media.AudioAttributes
 import android.speech.tts.TextToSpeech
 import com.example.seebeepee.model.RouteManager
 import java.util.Locale
+import kotlin.math.roundToInt
 
-class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
-    private var tts: TextToSpeech? = TextToSpeech(context, this)
+class TtsManager(context: Context) : TextToSpeech.OnInitListener {
+    private val appContext = context.applicationContext
+    private var tts: TextToSpeech? = TextToSpeech(appContext, this)
     private var isInitialized = false
     private val pendingUtterances = mutableListOf<String>()
 
@@ -837,19 +1001,43 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
             tts?.setAudioAttributes(audioAttributes)
 
             if (isInitialized) {
+                RouteManager.logError("TtsManager: Initialized successfully.")
+                speak("Welcome. Press the start button when you are ready to hike and at the first waypoint.")
                 synchronized(pendingUtterances) {
                     for (text in pendingUtterances) {
-                        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
-                        RouteManager.logError("TTS Spoken (queued): $text")
+                        if (AppPreferences(appContext).voiceAlertsEnabled) {
+                            tts?.speak(text, TextToSpeech.QUEUE_ADD, null, null)
+                            RouteManager.logError("TTS Spoken (queued): $text")
+                        }
                     }
                     pendingUtterances.clear()
                 }
+            } else {
+                RouteManager.logError("TtsManager: Language US missing or unsupported.")
             }
+        } else {
+            RouteManager.logError("TtsManager: Initialization failed with status $status")
         }
     }
 
+    fun speakLiveStatus() {
+        val message = generateLiveStatusMessage(appContext)
+        speak(message)
+    }
+
+    fun speakCourseCorrectionIfOffCourse(): Boolean {
+        val message = generateCourseCorrectionMessage(appContext)
+        if (message != null) {
+            speak(message)
+            return true
+        }
+        return false
+    }
+
     fun speak(text: String) {
-        if (AppPreferences(context).voiceAlertsEnabled) {
+        val alertsEnabled = AppPreferences(appContext).voiceAlertsEnabled
+
+        if (alertsEnabled) {
             if (isInitialized) {
                 tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
                 RouteManager.logError("TTS Spoken: $text")
@@ -859,6 +1047,8 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
                 }
                 RouteManager.logError("TTS Queued (not initialized yet): $text")
             }
+        } else {
+            RouteManager.logError("TTS Blocked: voiceAlertsEnabled preference is false.")
         }
     }
 
@@ -866,8 +1056,310 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         try {
             tts?.stop()
             tts?.shutdown()
+            tts = null
+            isInitialized = false
         } catch (e: Exception) {
             // Ignore
+        }
+    }
+
+    companion object {
+        /**
+         * Generates a course correction voice message if the angular deviation ΔB = bHiker - bTarget
+         * exceeds [coneAngle] in magnitude.
+         *
+         * If ΔB > 0 (e.g. bHiker = 30°, bTarget = 22°, ΔB = +8°), generates "Veer left 8 degrees".
+         * If ΔB < 0 (e.g. bHiker = 10°, bTarget = 22°, ΔB = -12°), generates "Veer right 12 degrees".
+         * Returns null if |ΔB| <= coneAngle or if rounded degrees is 0.
+         */
+        fun generateCourseCorrectionMessage(
+            bHiker: Double,
+            bTarget: Double,
+            coneAngle: Float
+        ): String? {
+            val deltaB = CoordinateUtils.computeAngularDeviation(bHiker, bTarget)
+            val absDelta = kotlin.math.abs(deltaB)
+            if (absDelta <= coneAngle) {
+                return null
+            }
+            val degrees = absDelta.roundToInt()
+            if (degrees == 0) return null
+            return if (deltaB > 0) {
+                "Veer left $degrees degrees"
+            } else {
+                "Veer right $degrees degrees"
+            }
+        }
+
+        fun generateCourseCorrectionMessage(
+            waypoints: List<com.example.seebeepee.model.Waypoint>,
+            currentIndex: Int,
+            breadcrumbs: List<com.example.seebeepee.model.Breadcrumb>,
+            coneAngle: Float,
+            loopbackDistance: Double = 10.0,
+            lowSpeedCutoff: Double = 1.2,
+            smoother: HeadingSmoother? = null
+        ): String? {
+            if (waypoints.isEmpty() || breadcrumbs.size < 2) return null
+
+            // Low-speed suppression guard
+            val speedKmh = CoordinateUtils.calculateRecentSpeed(breadcrumbs, loopbackDistance)
+            if (speedKmh < lowSpeedCutoff) {
+                return null
+            }
+
+            // Distance Loopback Window
+            val rawBearing = CoordinateUtils.calculateLoopbackBearing(breadcrumbs, loopbackDistance) ?: return null
+
+            // Vector EMA smoothing
+            val bHiker = smoother?.update(rawBearing) ?: rawBearing
+
+            val idx = currentIndex.coerceIn(0, waypoints.size - 1)
+            val targetWp = if (idx < waypoints.size - 1) waypoints[idx + 1] else waypoints[idx]
+            val lastBc = breadcrumbs.last()
+            val bTarget = CoordinateUtils.calculateBearing(lastBc.x, lastBc.y, targetWp.x, targetWp.y)
+
+            return generateCourseCorrectionMessage(bHiker, bTarget, coneAngle)
+        }
+
+        fun generateCourseCorrectionMessage(context: Context, smoother: HeadingSmoother? = null): String? {
+            val prefs = AppPreferences(context)
+            return generateCourseCorrectionMessage(
+                waypoints = RouteManager.waypoints,
+                currentIndex = RouteManager.currentWaypointIndex,
+                breadcrumbs = RouteManager.breadcrumbs,
+                coneAngle = prefs.coneAngle,
+                loopbackDistance = prefs.loopbackDistance,
+                lowSpeedCutoff = prefs.lowSpeedCutoff,
+                smoother = smoother
+            )
+        }
+
+        fun formatGridPositionForTts(position: String): String {
+            // Keep only the digits (drops leading letters like 'V' or any non-numeric symbols)
+            val digits = position.filter { it.isDigit() }
+
+            return if (digits.length >= 6) {
+                val group1 = digits.substring(0, 3).map { it }.joinToString(" ")
+                val group2 = digits.substring(3, 6).map { it }.joinToString(" ")
+                "$group1, $group2"
+            } else {
+                val chunks = digits.chunked(3)
+                chunks.joinToString(", ") { chunk ->
+                    chunk.map { it }.joinToString(" ")
+                }
+            }
+        }
+        fun generateLiveStatusMessage(
+            waypoints: List<com.example.seebeepee.model.Waypoint>,
+            currentIndex: Int,
+            breadcrumbs: List<com.example.seebeepee.model.Breadcrumb>,
+            flatPace: Double,
+            climbPenalty: Double
+        ): String {
+            if (waypoints.isEmpty()) {
+                return "No active route loaded."
+            }
+
+            val idx = currentIndex.coerceIn(0, waypoints.size - 1)
+            val targetWp = if (idx < waypoints.size - 1) waypoints[idx + 1] else waypoints[idx]
+
+            val lastBc = breadcrumbs.lastOrNull()
+            val liveX = lastBc?.x ?: waypoints[idx].x
+            val liveY = lastBc?.y ?: waypoints[idx].y
+            val liveAlt = lastBc?.altitude ?: waypoints[idx].altitude
+
+            val posStr = CoordinateUtils.formatGridReference6Digit(liveX, liveY)
+            val dist = CoordinateUtils.calculateDistance(liveX, liveY, targetWp.x, targetWp.y)
+            val rawBearing = CoordinateUtils.calculateBearing(liveX, liveY, targetWp.x, targetWp.y)
+            val bearing = (rawBearing.roundToInt() % 360 + 360) % 360
+            val climb = maxOf(0.0, targetWp.altitude - liveAlt)
+            val timeMinutes = NaismithEngine.estimateHikingTime(dist, climb, flatPace, climbPenalty)
+
+            return "Bearing $bearing degrees, Distance ${dist.roundToInt()} meters, Time ${timeMinutes.roundToInt()} minutes, Position ${formatGridPositionForTts(posStr)}."
+        }
+
+        fun generateLiveStatusMessage(context: Context): String {
+            val prefs = AppPreferences(context)
+            return generateLiveStatusMessage(
+                waypoints = RouteManager.waypoints,
+                currentIndex = RouteManager.currentWaypointIndex,
+                breadcrumbs = RouteManager.breadcrumbs,
+                flatPace = prefs.flatPace,
+                climbPenalty = prefs.climbPenalty
+            )
+        }
+    }
+}
+
+// --- FILE: app/src/main/java/com/example/seebeepee/util/WaypointAdvancementEngine.kt ---
+
+package com.example.seebeepee.util
+
+import com.example.seebeepee.model.Breadcrumb
+import com.example.seebeepee.model.Waypoint
+import kotlin.math.min
+
+sealed class AdvancementReason {
+    object DirectArrival : AdvancementReason()
+    data class NearMissAndMovingOnward(
+        val minDistance: Double,
+        val consecutiveFixes: Int
+    ) : AdvancementReason()
+}
+
+data class AdvancementResult(
+    val advanced: Boolean,
+    val reachedWaypoint: Waypoint? = null,
+    val nextTargetWaypoint: Waypoint? = null,
+    val newIndex: Int = -1,
+    val reason: AdvancementReason? = null,
+    val ttsAnnouncement: String? = null
+)
+
+class WaypointAdvancementEngine(
+    var arrivalThresholdMeters: Double = 20.0,
+    var nearMissThresholdMeters: Double = 40.0,
+    var requiredConsecutiveMovingOnwardFixes: Int = 10
+) {
+    private var lastTrackedTargetIndex: Int = -1
+    private var minDistanceToTarget: Double = Double.MAX_VALUE
+    private var consecutiveMovingOnwardCount: Int = 0
+    private var previousDistanceToTarget: Double? = null
+    private var previousDistanceToNext: Double? = null
+
+    fun reset() {
+        lastTrackedTargetIndex = -1
+        minDistanceToTarget = Double.MAX_VALUE
+        consecutiveMovingOnwardCount = 0
+        previousDistanceToTarget = null
+        previousDistanceToNext = null
+    }
+
+    /**
+     * Evaluates live GPS position (breadcrumbs) against current target waypoint.
+     *
+     * In SeeBeePee's route model, when currentWaypointIndex = i,
+     * origin is waypoints[i], target W_target is waypoints[i + 1],
+     * and next target W_next is waypoints[i + 2].
+     *
+     * Rules:
+     * - Condition A (Direct Arrival): dist(GPS, W_target) <= arrivalThreshold (default 20m).
+     * - Condition B (Near-Miss & Moving Onward):
+     *   - B1: arrivalThreshold < minDistanceToTarget <= nearMissThreshold (20m < minDist <= 40m).
+     *   - B2: For at least 10 consecutive breadcrumbs, dist to W_target is increasing
+     *         AND dist to W_next (waypoints[i + 2]) is decreasing.
+     *
+     * On advancement:
+     * - Advances currentWaypointIndex to i + 1.
+     * - Triggers TTS announcement: "Reached [TargetName]. Next target is [NextTargetName]."
+     */
+    fun processBreadcrumb(
+        breadcrumbs: List<Breadcrumb>,
+        waypoints: List<Waypoint>,
+        currentWaypointIndex: Int,
+        arrivalThreshold: Double = arrivalThresholdMeters,
+        nearMissThreshold: Double = nearMissThresholdMeters
+    ): AdvancementResult {
+        if (waypoints.isEmpty() || breadcrumbs.isEmpty()) {
+            return AdvancementResult(advanced = false)
+        }
+
+        val targetIndex = currentWaypointIndex + 1
+        if (targetIndex >= waypoints.size) {
+            return AdvancementResult(advanced = false)
+        }
+
+        // If target waypoint index changed, reset tracking state for the new target
+        if (lastTrackedTargetIndex != targetIndex) {
+            lastTrackedTargetIndex = targetIndex
+            minDistanceToTarget = Double.MAX_VALUE
+            consecutiveMovingOnwardCount = 0
+            previousDistanceToTarget = null
+            previousDistanceToNext = null
+        }
+
+        val lastBc = breadcrumbs.last()
+        val targetWp = waypoints[targetIndex]
+        val nextTargetWp = if (targetIndex + 1 < waypoints.size) waypoints[targetIndex + 1] else null
+
+        val effectiveArrivalThreshold = targetWp.threshold ?: arrivalThreshold
+        val thresholdDelta = nearMissThreshold - arrivalThreshold
+        val effectiveNearMissThreshold = targetWp.threshold?.let { it + thresholdDelta } ?: nearMissThreshold
+
+        val currentDistToTarget = CoordinateUtils.calculateDistance(lastBc.x, lastBc.y, targetWp.x, targetWp.y)
+        minDistanceToTarget = min(minDistanceToTarget, currentDistToTarget)
+
+        // Condition A: Direct Arrival
+        if (currentDistToTarget <= effectiveArrivalThreshold) {
+            val newIndex = currentWaypointIndex + 1
+            val announcement = generateAnnouncement(targetWp, nextTargetWp)
+            reset()
+            return AdvancementResult(
+                advanced = true,
+                reachedWaypoint = targetWp,
+                nextTargetWaypoint = nextTargetWp,
+                newIndex = newIndex,
+                reason = AdvancementReason.DirectArrival,
+                ttsAnnouncement = announcement
+            )
+        }
+
+        // Condition B: Near-Miss & Moving Onward
+        // B1: Passed within near-miss window (effectiveArrivalThreshold < minDistanceToTarget <= effectiveNearMissThreshold)
+        val isNearMissWindow = minDistanceToTarget > effectiveArrivalThreshold && minDistanceToTarget <= effectiveNearMissThreshold
+
+        // B2: 10 consecutive breadcrumbs distance to W_target increasing AND distance to W_next decreasing
+        if (nextTargetWp != null) {
+            val currentDistToNext = CoordinateUtils.calculateDistance(lastBc.x, lastBc.y, nextTargetWp.x, nextTargetWp.y)
+
+            val prevDistTarget = previousDistanceToTarget
+            val prevDistNext = previousDistanceToNext
+
+            if (prevDistTarget != null && prevDistNext != null) {
+                val isDistTargetIncreasing = currentDistToTarget > prevDistTarget
+                val isDistNextDecreasing = currentDistToNext < prevDistNext
+
+                if (isDistTargetIncreasing && isDistNextDecreasing) {
+                    consecutiveMovingOnwardCount++
+                } else {
+                    consecutiveMovingOnwardCount = 0
+                }
+            } else {
+                consecutiveMovingOnwardCount = 0
+            }
+
+            previousDistanceToNext = currentDistToNext
+
+            if (isNearMissWindow && consecutiveMovingOnwardCount >= requiredConsecutiveMovingOnwardFixes) {
+                val newIndex = currentWaypointIndex + 1
+                val announcement = generateAnnouncement(targetWp, nextTargetWp)
+                val reason = AdvancementReason.NearMissAndMovingOnward(
+                    minDistance = minDistanceToTarget,
+                    consecutiveFixes = consecutiveMovingOnwardCount
+                )
+                reset()
+                return AdvancementResult(
+                    advanced = true,
+                    reachedWaypoint = targetWp,
+                    nextTargetWaypoint = nextTargetWp,
+                    newIndex = newIndex,
+                    reason = reason,
+                    ttsAnnouncement = announcement
+                )
+            }
+        }
+
+        previousDistanceToTarget = currentDistToTarget
+
+        return AdvancementResult(advanced = false)
+    }
+
+    private fun generateAnnouncement(reached: Waypoint, next: Waypoint?): String {
+        return if (next != null) {
+            "Reached ${reached.name}. Next target is ${next.name}."
+        } else {
+            "Reached ${reached.name}. Route completed."
         }
     }
 }
@@ -891,6 +1383,18 @@ class AppPreferences(context: Context) {
         get() = prefs.getString("last_file_path", null)
         set(value) = prefs.edit().putString("last_file_path", value).apply()
 
+    var lastFileUri: String?
+        get() = prefs.getString("last_file_uri", null)
+        set(value) = prefs.edit().putString("last_file_uri", value).apply()
+
+    var lastRouteContent: String?
+        get() = prefs.getString("last_route_content", null)
+        set(value) = prefs.edit().putString("last_route_content", value).apply()
+
+    var lastRouteName: String?
+        get() = prefs.getString("last_route_name", null)
+        set(value) = prefs.edit().putString("last_route_name", value).apply()
+
     var flatPace: Double
         get() = prefs.getFloat("flat_pace", 20.0f).toDouble()
         set(value) = prefs.edit().putFloat("flat_pace", value.toFloat()).apply()
@@ -903,8 +1407,28 @@ class AppPreferences(context: Context) {
         get() = prefs.getFloat("cone_angle", 10.0f)
         set(value) = prefs.edit().putFloat("cone_angle", value).apply()
 
+    var loopbackDistance: Double
+        get() = prefs.getFloat("loopback_distance", 10.0f).toDouble()
+        set(value) = prefs.edit().putFloat("loopback_distance", value.toFloat()).apply()
+
+    var lowSpeedCutoff: Double
+        get() = prefs.getFloat("low_speed_cutoff", 1.2f).toDouble()
+        set(value) = prefs.edit().putFloat("low_speed_cutoff", value.toFloat()).apply()
+
+    var persistenceFixes: Int
+        get() = prefs.getInt("persistence_fixes", 2)
+        set(value) = prefs.edit().putInt("persistence_fixes", value).apply()
+
+    var arrivalThreshold: Double
+        get() = prefs.getFloat("arrival_threshold", 20.0f).toDouble()
+        set(value) = prefs.edit().putFloat("arrival_threshold", value.toFloat()).apply()
+
+    var nearMissThreshold: Double
+        get() = prefs.getFloat("near_miss_threshold", 40.0f).toDouble()
+        set(value) = prefs.edit().putFloat("near_miss_threshold", value.toFloat()).apply()
+
     var voiceAlertsEnabled: Boolean
-        get() = prefs.getBoolean("voice_alerts_enabled", false)
+        get() = prefs.getBoolean("voice_alerts_enabled", true)
         set(value) = prefs.edit().putBoolean("voice_alerts_enabled", value).apply()
 
     var autoTrack: Boolean
@@ -942,6 +1466,140 @@ class AppPreferences(context: Context) {
     var gridReferencePrecision: Int
         get() = prefs.getInt("grid_reference_precision", 6)
         set(value) = prefs.edit().putInt("grid_reference_precision", value).apply()
+
+    var isHikeActive: Boolean
+        get() = prefs.getBoolean("is_hike_active", false)
+        set(value) = prefs.edit().putBoolean("is_hike_active", value).apply()
+}
+
+
+// --- FILE: app/src/main/java/com/example/seebeepee/util/HeadingSmoother.kt ---
+
+package com.example.seebeepee.util
+
+import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+
+/**
+ * Implements Vector Exponential Moving Average (Vector EMA) smoothing for directional bearings.
+ */
+class HeadingSmoother(val alpha: Double = 0.3) {
+    private var smoothedVx: Double? = null
+    private var smoothedVy: Double? = null
+
+    private fun normalizeAngle(rawDegrees: Double): Double {
+        var angle = Math.toDegrees(rawDegrees) % 360.0
+        if (angle < 0) {
+            angle += 360.0
+        }
+        if (angle >= 360.0 || abs(angle - 360.0) < 1e-9) {
+            angle = 0.0
+        }
+        return angle
+    }
+
+    /**
+     * Updates the smoothed heading with a new raw bearing angle in degrees [0, 360).
+     * Uses Vector Exponential Moving Average: v_smooth = alpha * v_new + (1 - alpha) * v_old
+     * where v = (sin(radians(theta)), cos(radians(theta))).
+     * Returns the smoothed bearing angle in degrees [0, 360).
+     */
+    fun update(newBearingDegrees: Double): Double {
+        val rad = Math.toRadians(newBearingDegrees)
+        val newVx = sin(rad)
+        val newVy = cos(rad)
+
+        val curVx = smoothedVx
+        val curVy = smoothedVy
+
+        val (nextVx, nextVy) = if (curVx == null || curVy == null) {
+            Pair(newVx, newVy)
+        } else {
+            Pair(
+                alpha * newVx + (1.0 - alpha) * curVx,
+                alpha * newVy + (1.0 - alpha) * curVy
+            )
+        }
+
+        smoothedVx = nextVx
+        smoothedVy = nextVy
+
+        return normalizeAngle(atan2(nextVx, nextVy))
+    }
+
+    val currentSmoothedBearing: Double?
+        get() {
+            val vx = smoothedVx ?: return null
+            val vy = smoothedVy ?: return null
+            return normalizeAngle(atan2(vx, vy))
+        }
+
+    fun reset() {
+        smoothedVx = null
+        smoothedVy = null
+    }
+
+    companion object {
+        /**
+         * Pure function for Vector EMA smoothing on a single step.
+         */
+        fun smoothBearingVector(
+            newBearingDegrees: Double,
+            oldBearingDegrees: Double,
+            alpha: Double = 0.3
+        ): Double {
+            val newRad = Math.toRadians(newBearingDegrees)
+            val oldRad = Math.toRadians(oldBearingDegrees)
+
+            val newVx = sin(newRad)
+            val newVy = cos(newRad)
+            val oldVx = sin(oldRad)
+            val oldVy = cos(oldRad)
+
+            val smoothedVx = alpha * newVx + (1.0 - alpha) * oldVx
+            val smoothedVy = alpha * newVy + (1.0 - alpha) * oldVy
+
+            var angle = Math.toDegrees(atan2(smoothedVx, smoothedVy)) % 360.0
+            if (angle < 0) {
+                angle += 360.0
+            }
+            if (angle >= 360.0 || abs(angle - 360.0) < 1e-9) {
+                angle = 0.0
+            }
+            return angle
+        }
+    }
+}
+
+/**
+ * Gatekeeper enforcing that off-course deviation must persist across [requiredFixes]
+ * consecutive GPS updates before triggering an alert.
+ */
+class PersistenceGatekeeper(val requiredFixes: Int = 2) {
+    private var consecutiveOffCourseCount: Int = 0
+
+    val currentCount: Int
+        get() = consecutiveOffCourseCount
+
+    /**
+     * Updates gatekeeper state with whether current fix is off-course.
+     * Returns true if off-course condition has persisted for at least [requiredFixes] consecutive updates.
+     */
+    fun update(isOffCourse: Boolean): Boolean {
+        return if (isOffCourse) {
+            consecutiveOffCourseCount++
+            consecutiveOffCourseCount >= requiredFixes
+        } else {
+            consecutiveOffCourseCount = 0
+            false
+        }
+    }
+
+    fun reset() {
+        consecutiveOffCourseCount = 0
+    }
 }
 
 
@@ -979,11 +1637,57 @@ object NaismithEngine {
 
 package com.example.seebeepee.util
 
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
 import com.example.seebeepee.model.Waypoint
 import java.io.BufferedReader
 import java.io.StringReader
 
 object RouteParser {
+    /**
+     * Queries OpenableColumns.DISPLAY_NAME via context.contentResolver when given a content:// URI.
+     * Extracts the display name and strips the extension (e.g. "glounthaune.csv" -> "glounthaune").
+     */
+    fun extractRouteNameFromUri(context: Context, uri: Uri, fallbackName: String? = null): String {
+        var displayName: String? = null
+        if (uri.scheme == "content") {
+            try {
+                context.contentResolver.query(
+                    uri,
+                    arrayOf(OpenableColumns.DISPLAY_NAME),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val columnIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (columnIndex != -1) {
+                            displayName = cursor.getString(columnIndex)
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // Fallback to uri.lastPathSegment or fallbackName if query fails
+            }
+        }
+        if (displayName.isNullOrBlank()) {
+            displayName = fallbackName ?: uri.lastPathSegment
+        }
+        if (displayName.isNullOrBlank()) {
+            displayName = "Imported Route"
+        }
+        return displayName.substringBeforeLast(".")
+    }
+
+    fun extractRouteNameFromUri(context: Context, uriString: String, fallbackName: String? = null): String {
+        return try {
+            val uri = Uri.parse(uriString)
+            extractRouteNameFromUri(context, uri, fallbackName)
+        } catch (e: Exception) {
+            (fallbackName ?: uriString.substringAfterLast("/")).substringBeforeLast(".")
+        }
+    }
     /**
      * Parses CSV route content into a list of Waypoints.
      * Supports columns: grid_ref/grid/location, latitude/lat, longitude/lon, altitude/alt/elevation/ele, name/title.
@@ -1003,6 +1707,7 @@ object RouteParser {
         val latIdx = headers.indexOfFirst { it in listOf("latitude", "lat") }
         val lonIdx = headers.indexOfFirst { it in listOf("longitude", "lon") }
         val altIdx = headers.indexOfFirst { it in listOf("altitude", "alt", "elevation", "ele") }
+        val thresholdIdx = headers.indexOfFirst { it in listOf("threshold", "reach_threshold", "radius") }
 
         for (i in 1 until lines.size) {
             val line = lines[i].trim()
@@ -1023,13 +1728,19 @@ object RouteParser {
                 0.0
             }
 
+            val threshold = if (thresholdIdx >= 0 && thresholdIdx < tokens.size) {
+                tokens[thresholdIdx].trim().removeSurrounding("\"", "\"").toDoubleOrNull()
+            } else {
+                null
+            }
+
             val waypoint = if (gridIdx >= 0 && gridIdx < tokens.size && tokens[gridIdx].isNotBlank()) {
                 val gridRef = tokens[gridIdx].trim().removeSurrounding("\"", "\"")
-                Waypoint.fromGridReference(name, gridRef, alt)
+                Waypoint.fromGridReference(name, gridRef, alt, threshold)
             } else if (latIdx >= 0 && lonIdx >= 0 && latIdx < tokens.size && lonIdx < tokens.size) {
                 val lat = tokens[latIdx].trim().removeSurrounding("\"", "\"").toDoubleOrNull() ?: 0.0
                 val lon = tokens[lonIdx].trim().removeSurrounding("\"", "\"").toDoubleOrNull() ?: 0.0
-                Waypoint.fromLatLon(name, lat, lon, alt)
+                Waypoint.fromLatLon(name, lat, lon, alt, threshold)
             } else {
                 continue
             }
@@ -1122,6 +1833,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.seebeepee.model.HikeState
 import com.example.seebeepee.model.RouteManager
 import com.example.seebeepee.model.Waypoint
 import com.example.seebeepee.util.AppPreferences
@@ -1154,6 +1866,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var coneAngle by mutableFloatStateOf(prefs.coneAngle)
         private set
+    var loopbackDistance by mutableDoubleStateOf(prefs.loopbackDistance)
+        private set
+    var lowSpeedCutoff by mutableDoubleStateOf(prefs.lowSpeedCutoff)
+        private set
+    var persistenceFixes by mutableIntStateOf(prefs.persistenceFixes)
+        private set
+    var arrivalThreshold by mutableDoubleStateOf(prefs.arrivalThreshold)
+        private set
+    var nearMissThreshold by mutableDoubleStateOf(prefs.nearMissThreshold)
+        private set
 
     var showWaypointName by mutableStateOf(prefs.showWaypointName)
         private set
@@ -1178,11 +1900,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var elapsedTimeSeconds by mutableLongStateOf(0L)
         private set
 
+    var isHikeActive by mutableStateOf(prefs.isHikeActive || RouteManager.hikeState == HikeState.HIKING)
+        private set
+
     init {
         if (RouteManager.waypoints.isEmpty()) {
-            val sample = RouteParser.parseCsv(RouteParser.generateSampleIrishGridCsv())
-            RouteManager.loadWaypoints("Sample Hike (Irish Grid)", sample)
+            val loaded = RouteManager.loadSavedRoute(prefs, getApplication())
+            if (!loaded) {
+                val sampleCsv = RouteParser.generateSampleIrishGridCsv()
+                val sample = RouteParser.parseCsv(sampleCsv)
+                loadRoute("Sample Hike (Irish Grid)", sample, content = sampleCsv, filePath = null)
+            }
         }
+        restoreHikeState()
 
         viewModelScope.launch {
             while (true) {
@@ -1190,6 +1920,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 elapsedTimeSeconds++
             }
         }
+    }
+
+    fun startHike() {
+        RouteManager.startHike(prefs)
+        isHikeActive = true
+    }
+
+    fun stopHike() {
+        RouteManager.stopHike(prefs)
+        isHikeActive = false
+    }
+
+    fun finishHike(save: Boolean, context: android.content.Context? = null): java.io.File? {
+        val file = RouteManager.finishHike(prefs, save, context)
+        isHikeActive = false
+        return file
+    }
+
+    fun restoreHikeState() {
+        RouteManager.restoreHikeState(prefs)
+        isHikeActive = RouteManager.hikeState == HikeState.HIKING || prefs.isHikeActive
+    }
+
+    fun checkAndRestoreHikeState() {
+        restoreHikeState()
     }
 
     fun updateFlatPace(pace: Double) {
@@ -1215,6 +1970,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun updateConeAngle(angle: Float) {
         coneAngle = angle
         prefs.coneAngle = angle
+    }
+
+    fun updateLoopbackDistance(distance: Double) {
+        loopbackDistance = distance
+        prefs.loopbackDistance = distance
+    }
+
+    fun updateLowSpeedCutoff(cutoff: Double) {
+        lowSpeedCutoff = cutoff
+        prefs.lowSpeedCutoff = cutoff
+    }
+
+    fun updatePersistenceFixes(fixes: Int) {
+        persistenceFixes = fixes
+        prefs.persistenceFixes = fixes
+    }
+
+    fun updateArrivalThreshold(threshold: Double) {
+        arrivalThreshold = threshold
+        prefs.arrivalThreshold = threshold
+    }
+
+    fun updateNearMissThreshold(threshold: Double) {
+        nearMissThreshold = threshold
+        prefs.nearMissThreshold = threshold
     }
 
     fun updateShowWaypointName(enabled: Boolean) {
@@ -1257,9 +2037,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         prefs.gridReferencePrecision = precision
     }
 
-    fun loadRoute(name: String, waypoints: List<Waypoint>) {
-        RouteManager.loadWaypoints(name, waypoints)
+    fun loadRoute(
+        name: String,
+        waypoints: List<Waypoint>,
+        content: String? = null,
+        filePath: String? = null,
+        fileUri: String? = null
+    ) {
+        val displayName = if (!fileUri.isNullOrEmpty() && fileUri.startsWith("content://")) {
+            RouteParser.extractRouteNameFromUri(getApplication(), fileUri, fallbackName = name)
+        } else {
+            name.substringBeforeLast(".")
+        }
+
+        val routeContent = content ?: if (waypoints.isNotEmpty()) {
+            waypoints.joinToString("\n", prefix = "Name,Easting,Northing,Altitude\n") { wp ->
+                "${wp.name},${wp.x.toLong()},${wp.y.toLong()},${wp.altitude.toLong()}"
+            }
+        } else null
+
+        RouteManager.loadWaypoints(displayName, waypoints, content = routeContent, filePath = filePath, fileUri = fileUri)
         elapsedTimeSeconds = 0L
+
+        prefs.lastRouteName = displayName
+        prefs.lastFilePath = filePath
+        prefs.lastFileUri = fileUri
+        prefs.lastRouteContent = routeContent
     }
 
     val legMetrics: List<LegMetric>
@@ -1444,22 +2247,43 @@ data class Breadcrumb(
 
 package com.example.seebeepee.model
 
+import android.content.Context
 import androidx.compose.runtime.mutableStateListOf
+import com.example.seebeepee.util.AdvancementResult
+import com.example.seebeepee.util.AppPreferences
+import com.example.seebeepee.util.RouteParser
+import com.example.seebeepee.util.WaypointAdvancementEngine
+import com.example.seebeepee.util.saveBreadcrumbsToGpx
+import java.io.File
 
 object RouteManager {
     val waypoints = mutableStateListOf<Waypoint>()
     val breadcrumbs = mutableStateListOf<Breadcrumb>()
     val debugLogs = mutableStateListOf<String>()
+    val waypointAdvancementEngine = WaypointAdvancementEngine()
 
     var currentWaypointIndex: Int = 0
     var currentRouteName: String = "No Route Loaded"
+    var currentFilePath: String? = null
+    var currentFileUri: String? = null
+    var currentRouteContent: String? = null
     var hikeState: HikeState = HikeState.IDLE
 
-    fun loadWaypoints(routeName: String, newWaypoints: List<Waypoint>) {
+    fun loadWaypoints(
+        routeName: String,
+        newWaypoints: List<Waypoint>,
+        content: String? = null,
+        filePath: String? = null,
+        fileUri: String? = null
+    ) {
         currentRouteName = routeName
+        currentFilePath = filePath
+        currentFileUri = fileUri
+        currentRouteContent = content
         waypoints.clear()
         waypoints.addAll(newWaypoints)
         currentWaypointIndex = 0
+        waypointAdvancementEngine.reset()
         if (newWaypoints.isNotEmpty()) {
             hikeState = HikeState.ROUTE_LOADED
         } else {
@@ -1468,19 +2292,128 @@ object RouteManager {
         logError("Loaded route '$routeName' with ${newWaypoints.size} waypoints.")
     }
 
+    fun loadSavedRoute(prefs: AppPreferences, context: Context? = null): Boolean {
+        val path = prefs.lastFilePath
+        val uri = prefs.lastFileUri
+        var name = prefs.lastRouteName ?: "Saved Route"
+
+        if (context != null && !uri.isNullOrEmpty() && uri.startsWith("content://")) {
+            name = RouteParser.extractRouteNameFromUri(context, uri, fallbackName = name)
+        } else {
+            name = name.substringBeforeLast(".")
+        }
+
+        if (!path.isNullOrEmpty()) {
+            try {
+                val file = File(path)
+                if (file.exists() && file.isFile) {
+                    val content = file.readText()
+                    val parsedWaypoints = parseRouteContent(path, content)
+                    if (parsedWaypoints.isNotEmpty()) {
+                        loadWaypoints(name, parsedWaypoints, content = content, filePath = path, fileUri = uri)
+                        if (prefs.isHikeActive) {
+                            hikeState = HikeState.HIKING
+                        }
+                        return true
+                    }
+                }
+            } catch (e: Exception) {
+                logError("Failed to auto-reload route from path '$path': ${e.message}")
+            }
+        }
+
+        val content = prefs.lastRouteContent
+        if (!content.isNullOrEmpty()) {
+            try {
+                val parsedWaypoints = parseRouteContent(name, content)
+                if (parsedWaypoints.isNotEmpty()) {
+                    loadWaypoints(name, parsedWaypoints, content = content, filePath = path, fileUri = uri)
+                    if (prefs.isHikeActive) {
+                        hikeState = HikeState.HIKING
+                    }
+                    return true
+                }
+            } catch (e: Exception) {
+                logError("Failed to auto-reload route from saved content: ${e.message}")
+            }
+        }
+
+        return false
+    }
+
+    fun startHike(prefs: AppPreferences) {
+        hikeState = HikeState.HIKING
+        prefs.isHikeActive = true
+        logError("Hike started and persisted as active.")
+    }
+
+    fun stopHike(prefs: AppPreferences) {
+        hikeState = HikeState.IDLE
+        prefs.isHikeActive = false
+        logError("Hike stopped and persisted as inactive.")
+    }
+
+    fun finishHike(prefs: AppPreferences, save: Boolean, context: Context? = null): File? {
+        val savedFile = if (save && context != null) {
+            persistUnsavedBreadcrumbs(context)
+        } else {
+            null
+        }
+        clearBreadcrumbs()
+        stopHike(prefs)
+        return savedFile
+    }
+
+    fun restoreHikeState(prefs: AppPreferences) {
+        if (prefs.isHikeActive) {
+            if (waypoints.isNotEmpty()) {
+                hikeState = HikeState.HIKING
+                logError("Restored active hike state (HIKING).")
+            } else {
+                if (loadSavedRoute(prefs)) {
+                    hikeState = HikeState.HIKING
+                    logError("Loaded saved route and restored active hike state (HIKING).")
+                }
+            }
+        }
+    }
+
+    private fun parseRouteContent(fileNameOrPath: String, content: String): List<Waypoint> {
+        return if (fileNameOrPath.endsWith(".gpx", ignoreCase = true) || content.contains("<gpx", ignoreCase = true)) {
+            RouteParser.parseGpx(content)
+        } else {
+            RouteParser.parseCsv(content)
+        }
+    }
+
     fun addBreadcrumb(breadcrumb: Breadcrumb) {
         breadcrumbs.add(breadcrumb)
     }
 
     fun clearBreadcrumbs() {
         breadcrumbs.clear()
+        waypointAdvancementEngine.reset()
         logError("Breadcrumbs cleared.")
     }
 
-    fun persistUnsavedBreadcrumbs() {
+    fun processWaypointAdvancement(prefs: AppPreferences): AdvancementResult {
+        return waypointAdvancementEngine.processBreadcrumb(
+            breadcrumbs = breadcrumbs,
+            waypoints = waypoints,
+            currentWaypointIndex = currentWaypointIndex,
+            arrivalThreshold = prefs.arrivalThreshold,
+            nearMissThreshold = prefs.nearMissThreshold
+        )
+    }
+
+    fun persistUnsavedBreadcrumbs(context: Context? = null): File? {
         if (breadcrumbs.isNotEmpty()) {
             logError("Persisted ${breadcrumbs.size} breadcrumbs for route '$currentRouteName'.")
+            if (context != null) {
+                return saveBreadcrumbsToGpx(context, breadcrumbs, currentRouteName, currentFilePath, currentFileUri)
+            }
         }
+        return null
     }
 
     fun logError(message: String) {
@@ -1503,7 +2436,8 @@ data class Waypoint(
     val name: String,
     val x: Double,
     val y: Double,
-    val altitude: Double = 0.0
+    val altitude: Double = 0.0,
+    val threshold: Double? = null
 ) {
     fun toLatLonString(): String {
         val (lat, lon) = CoordinateUtils.metricToLatLon(x, y)
@@ -1515,14 +2449,14 @@ data class Waypoint(
     }
 
     companion object {
-        fun fromGridReference(name: String, gridRef: String, altitude: Double = 0.0): Waypoint {
+        fun fromGridReference(name: String, gridRef: String, altitude: Double = 0.0, threshold: Double? = null): Waypoint {
             val (x, y) = CoordinateUtils.parseGridReference(gridRef)
-            return Waypoint(name, x, y, altitude)
+            return Waypoint(name, x, y, altitude, threshold)
         }
 
-        fun fromLatLon(name: String, lat: Double, lon: Double, altitude: Double = 0.0): Waypoint {
+        fun fromLatLon(name: String, lat: Double, lon: Double, altitude: Double = 0.0, threshold: Double? = null): Waypoint {
             val (x, y) = CoordinateUtils.latLonToMetric(lat, lon)
-            return Waypoint(name, x, y, altitude)
+            return Waypoint(name, x, y, altitude, threshold)
         }
     }
 }
@@ -1539,8 +2473,6 @@ import android.os.Build
 import android.view.KeyEvent
 import com.example.seebeepee.model.HikeState
 import com.example.seebeepee.model.RouteManager
-import com.example.seebeepee.util.AppPreferences
-import com.example.seebeepee.util.CoordinateUtils
 import com.example.seebeepee.util.TtsManager
 
 class MediaButtonBroadcastReceiver : BroadcastReceiver() {
@@ -1586,25 +2518,7 @@ class MediaButtonBroadcastReceiver : BroadcastReceiver() {
 
     private fun speakNavigationStatus(context: Context) {
         val ttsManager = TtsManager(context.applicationContext)
-        val waypoints = RouteManager.waypoints
-        val idx = RouteManager.currentWaypointIndex
-        val precision = AppPreferences(context).gridReferencePrecision
-        if (waypoints.isNotEmpty() && idx < waypoints.size) {
-            val current = waypoints[idx]
-            val next = if (idx < waypoints.size - 1) waypoints[idx + 1] else null
-            if (next != null) {
-                val dist = CoordinateUtils.calculateDistance(current.x, current.y, next.x, next.y)
-                val bearing = CoordinateUtils.calculateBearing(current.x, current.y, next.x, next.y)
-                val gridRef = CoordinateUtils.formatGridReferenceWithLetter(next.x, next.y, precision)
-                val text = "Leg to ${next.name}, grid reference $gridRef. Bearing ${bearing.toInt()} degrees. Distance ${dist.toInt()} meters."
-                ttsManager.speak(text)
-            } else {
-                val gridRef = CoordinateUtils.formatGridReferenceWithLetter(current.x, current.y, precision)
-                ttsManager.speak("Currently at final waypoint ${current.name}, grid reference $gridRef.")
-            }
-        } else {
-            ttsManager.speak("No active route loaded.")
-        }
+        ttsManager.speakLiveStatus()
     }
 }
 
@@ -1619,20 +2533,24 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.location.LocationManager
 import android.media.AudioAttributes
+import android.media.AudioFormat
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.media.AudioTrack
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import android.view.KeyEvent
+import android.widget.Toast
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.media.session.MediaButtonReceiver
@@ -1644,8 +2562,11 @@ import com.example.seebeepee.model.HikeState
 import com.example.seebeepee.model.RouteManager
 import com.example.seebeepee.util.AppPreferences
 import com.example.seebeepee.util.CoordinateUtils
+import com.example.seebeepee.util.HeadingSmoother
+import com.example.seebeepee.util.PersistenceGatekeeper
 import com.example.seebeepee.util.TtsManager
 import kotlinx.coroutines.*
+import kotlin.math.sin
 
 class HikingForegroundService : Service() {
     private val serviceJob = SupervisorJob()
@@ -1653,9 +2574,19 @@ class HikingForegroundService : Service() {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
     private var mediaSession: MediaSessionCompat? = null
-    private var mediaButtonPendingIntent: PendingIntent? = null
     private var isRunning = false
     private var audioFocusRequest: AudioFocusRequest? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // Inaudible background audio stream variables
+    private var audioTrack: AudioTrack? = null
+    private var audioStreamJob: Job? = null
+
+    // Course correction variables
+    private var lastCourseCorrectionTime: Long = 0L
+    private val courseCorrectionCooldownMs: Long = 15000L // 15 seconds cooldown
+    private val headingSmoother = HeadingSmoother(alpha = 0.3)
+    private var persistenceGatekeeper: PersistenceGatekeeper? = null
 
     companion object {
         const val CHANNEL_ID = "HikingServiceChannel"
@@ -1667,35 +2598,58 @@ class HikingForegroundService : Service() {
         super.onCreate()
         ttsManager = TtsManager(applicationContext)
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-        requestAudioFocus()
         setupMediaSession()
+        requestAudioFocus()
+        startInaudibleAudioStream()
         createNotificationChannel()
         setupLocationCallback()
     }
 
+    private fun showToast(message: String) {
+        mainHandler.post {
+            Toast.makeText(applicationContext, message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun requestAudioFocus(): Boolean {
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val audioAttributes = AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
-            val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+
+            val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(audioAttributes)
-                .setAcceptsDelayedFocusGain(true)
-                .setOnAudioFocusChangeListener { _ -> }
+                .setAcceptsDelayedFocusGain(false)
+                .setOnAudioFocusChangeListener { focusChange ->
+                    when (focusChange) {
+                        AudioManager.AUDIOFOCUS_GAIN -> {
+                            mediaSession?.setActive(true)
+                        }
+                        else -> {}
+                    }
+                }
                 .build()
             audioFocusRequest = focusRequest
-            audioManager.requestAudioFocus(focusRequest) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            val result = audioManager.requestAudioFocus(focusRequest)
+            result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         } else {
             @Suppress("DEPRECATION")
             val result = audioManager.requestAudioFocus(
                 { _ -> },
                 AudioManager.STREAM_MUSIC,
-                AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                AudioManager.AUDIOFOCUS_GAIN
             )
             result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         }
+
+        if (granted) {
+            showToast("Audio Focus: GRANTED")
+        } else {
+            showToast("Audio Focus: DENIED!")
+        }
+        return granted
     }
 
     private fun abandonAudioFocus() {
@@ -1708,6 +2662,67 @@ class HikingForegroundService : Service() {
         }
     }
 
+    private fun startInaudibleAudioStream() {
+        if (audioTrack != null) return
+        try {
+            val sampleRate = 44100
+            val bufferSize = AudioTrack.getMinBufferSize(
+                sampleRate,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
+
+            audioTrack = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build()
+                )
+                .setBufferSizeInBytes(bufferSize)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+
+            val toneBuffer = ByteArray(bufferSize)
+            val frequency = 19000.0
+            for (i in toneBuffer.indices step 2) {
+                val sampleIndex = i / 2
+                val angle = sampleIndex * 2.0 * Math.PI * frequency / sampleRate
+                val sample = (sin(angle) * 100.0).toInt().toShort()
+                toneBuffer[i] = (sample.toInt() and 0xff).toByte()
+                toneBuffer[i + 1] = ((sample.toInt() shr 8) and 0xff).toByte()
+            }
+
+            audioTrack?.play()
+
+            audioStreamJob = CoroutineScope(Dispatchers.IO + serviceJob).launch {
+                while (isActive && audioTrack != null) {
+                    audioTrack?.write(toneBuffer, 0, toneBuffer.size)
+                    delay(300L)
+                }
+            }
+        } catch (e: Exception) {
+            RouteManager.logError("Error starting inaudible audio stream: ${e.message}")
+        }
+    }
+
+    private fun stopInaudibleAudioStream() {
+        audioStreamJob?.cancel()
+        audioStreamJob = null
+        try {
+            audioTrack?.stop()
+            audioTrack?.release()
+            audioTrack = null
+        } catch (e: Exception) { }
+    }
+
     private fun setupLocationCallback() {
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(locationResult: LocationResult) {
@@ -1718,124 +2733,176 @@ class HikingForegroundService : Service() {
 
                     val breadcrumb = Breadcrumb(x, y, alt, timestamp)
                     RouteManager.addBreadcrumb(breadcrumb)
+
+                    checkWaypointAdvancement()
+                    checkCourseCorrectionAlert()
                 }
             }
+        }
+    }
+
+    private fun checkWaypointAdvancement() {
+        if (RouteManager.hikeState != HikeState.HIKING) return
+
+        val prefs = AppPreferences(applicationContext)
+        val result = RouteManager.processWaypointAdvancement(prefs)
+
+        if (result.advanced) {
+            RouteManager.currentWaypointIndex = result.newIndex
+            persistenceGatekeeper?.reset()
+            RouteManager.logError("Auto-advanced waypoint to index ${result.newIndex}: ${result.reachedWaypoint?.name}. Reason: ${result.reason}")
+
+            result.ttsAnnouncement?.let { announcement ->
+                requestAudioFocus()
+                ttsManager.speak(announcement)
+            }
+        }
+    }
+
+    private fun checkCourseCorrectionAlert() {
+        if (RouteManager.hikeState != HikeState.HIKING) return
+
+        val prefs = AppPreferences(applicationContext)
+        val requiredFixes = prefs.persistenceFixes
+        if (persistenceGatekeeper == null || persistenceGatekeeper?.requiredFixes != requiredFixes) {
+            persistenceGatekeeper = PersistenceGatekeeper(requiredFixes)
+        }
+
+        val breadcrumbs = RouteManager.breadcrumbs
+        val waypoints = RouteManager.waypoints
+        if (waypoints.isEmpty() || breadcrumbs.size < 2) return
+
+        // 1. Low-Speed / Stationary Suppression Guard
+        val currentSpeed = CoordinateUtils.calculateRecentSpeed(breadcrumbs, prefs.loopbackDistance)
+        if (currentSpeed < prefs.lowSpeedCutoff) {
+            persistenceGatekeeper?.reset()
+            return
+        }
+
+        // 2. Distance Loopback Window
+        val rawBearing = CoordinateUtils.calculateLoopbackBearing(breadcrumbs, prefs.loopbackDistance) ?: return
+
+        // 3. Vector Exponential Moving Average (Vector EMA)
+        val smoothedBearing = headingSmoother.update(rawBearing)
+
+        // 4. Deviation calculation
+        val idx = RouteManager.currentWaypointIndex.coerceIn(0, waypoints.size - 1)
+        val targetWp = if (idx < waypoints.size - 1) waypoints[idx + 1] else waypoints[idx]
+        val lastBc = breadcrumbs.last()
+        val targetBearing = CoordinateUtils.calculateBearing(lastBc.x, lastBc.y, targetWp.x, targetWp.y)
+
+        val deltaB = CoordinateUtils.computeAngularDeviation(smoothedBearing, targetBearing)
+        val isOffCourse = kotlin.math.abs(deltaB) > prefs.coneAngle
+
+        // 5. Hysteresis & Persistence Gatekeeper
+        val alertTriggered = persistenceGatekeeper?.update(isOffCourse) ?: false
+        if (!alertTriggered) return
+
+        // 6. Cooldown Check & Spoken Warning
+        val now = System.currentTimeMillis()
+        if (now - lastCourseCorrectionTime < courseCorrectionCooldownMs) {
+            return
+        }
+
+        val message = TtsManager.generateCourseCorrectionMessage(smoothedBearing, targetBearing, prefs.coneAngle)
+        if (message != null) {
+            requestAudioFocus()
+            ttsManager.speak(message)
+            lastCourseCorrectionTime = now
+            persistenceGatekeeper?.reset()
         }
     }
 
     private fun setupMediaSession() {
-        val pendingIntent = MediaButtonReceiver.buildMediaButtonPendingIntent(
-            this@HikingForegroundService,
-            PlaybackStateCompat.ACTION_PLAY_PAUSE
+        val mediaButtonIntent = Intent(Intent.ACTION_MEDIA_BUTTON).apply {
+            setClass(this@HikingForegroundService, MediaButtonReceiver::class.java)
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            this,
+            0,
+            mediaButtonIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        mediaButtonPendingIntent = pendingIntent
 
-        mediaSession = MediaSessionCompat(this, "SeeBeePeeMediaSession").apply {
-            setFlags(
-                MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or
-                        MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
-            )
-            setMediaButtonReceiver(pendingIntent)
-            setCallback(object : MediaSessionCompat.Callback() {
-                override fun onPlay() {
-                    super.onPlay()
-                    requestAudioFocus()
-                    speakCurrentLegStats()
+        val session = MediaSessionCompat(this, "SeeBeePeeMediaSession")
+        session.setFlags(
+            MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or
+                    MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
+        )
+        session.setMediaButtonReceiver(pendingIntent)
+
+        session.setMetadata(
+            MediaMetadataCompat.Builder()
+                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, "Hiking Navigation")
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, "SeeBeePee")
+                .build()
+        )
+
+        session.setPlaybackState(
+            PlaybackStateCompat.Builder()
+                .setState(PlaybackStateCompat.STATE_PLAYING, 0L, 1.0f)
+                .setActions(
+                    PlaybackStateCompat.ACTION_PLAY or
+                            PlaybackStateCompat.ACTION_PAUSE or
+                            PlaybackStateCompat.ACTION_PLAY_PAUSE or
+                            PlaybackStateCompat.ACTION_SKIP_TO_NEXT
+                )
+                .build()
+        )
+
+        session.setCallback(object : MediaSessionCompat.Callback() {
+            override fun onMediaButtonEvent(mediaButtonEvent: Intent): Boolean {
+                val keyEvent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    mediaButtonEvent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    mediaButtonEvent.getParcelableExtra(Intent.EXTRA_KEY_EVENT) as? KeyEvent
                 }
-                override fun onPause() {
-                    super.onPause()
+
+                if (keyEvent != null && keyEvent.action == KeyEvent.ACTION_DOWN) {
+                    showToast("Key Down: ${keyEvent.keyCode}")
                     requestAudioFocus()
-                    ttsManager.speak("Hike tracking paused.")
-                }
-                override fun onSkipToNext() {
-                    super.onSkipToNext()
-                    requestAudioFocus()
-                    if (RouteManager.waypoints.isNotEmpty()) {
-                        RouteManager.currentWaypointIndex = (RouteManager.currentWaypointIndex + 1) % RouteManager.waypoints.size
-                        speakCurrentLegStats()
-                    }
-                }
-                override fun onMediaButtonEvent(mediaButtonEvent: Intent): Boolean {
-                    val keyEvent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        mediaButtonEvent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        mediaButtonEvent.getParcelableExtra(Intent.EXTRA_KEY_EVENT) as? KeyEvent
-                    }
-                    if (keyEvent != null && keyEvent.action == KeyEvent.ACTION_DOWN) {
-                        requestAudioFocus()
-                        when (keyEvent.keyCode) {
-                            KeyEvent.KEYCODE_MEDIA_PLAY,
-                            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
-                            KeyEvent.KEYCODE_HEADSETHOOK -> {
+
+                    when (keyEvent.keyCode) {
+                        KeyEvent.KEYCODE_MEDIA_PLAY,
+                        KeyEvent.KEYCODE_MEDIA_PAUSE,
+                        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                        KeyEvent.KEYCODE_HEADSETHOOK -> {
+                            speakCurrentLegStats()
+                            return true
+                        }
+                        KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                            if (RouteManager.waypoints.isNotEmpty()) {
+                                RouteManager.currentWaypointIndex = (RouteManager.currentWaypointIndex + 1) % RouteManager.waypoints.size
                                 speakCurrentLegStats()
-                                return true
                             }
-                            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
-                                ttsManager.speak("Hike tracking paused.")
-                                return true
-                            }
-                            KeyEvent.KEYCODE_MEDIA_NEXT -> {
-                                if (RouteManager.waypoints.isNotEmpty()) {
-                                    RouteManager.currentWaypointIndex = (RouteManager.currentWaypointIndex + 1) % RouteManager.waypoints.size
-                                    speakCurrentLegStats()
-                                }
-                                return true
-                            }
+                            return true
                         }
                     }
-                    return super.onMediaButtonEvent(mediaButtonEvent)
                 }
-            })
-            setPlaybackState(
-                PlaybackStateCompat.Builder()
-                    .setState(PlaybackStateCompat.STATE_PLAYING, 0L, 1.0f)
-                    .setActions(
-                        PlaybackStateCompat.ACTION_PLAY_PAUSE or
-                                PlaybackStateCompat.ACTION_PLAY or
-                                PlaybackStateCompat.ACTION_PLAY_PAUSE
-                    )
-                    .build()
-            )
-            isActive = true
-        }
+                return super.onMediaButtonEvent(mediaButtonEvent)
+            }
+        })
+
+        session.setActive(true)
+        mediaSession = session
     }
 
     private fun speakCurrentLegStats() {
         requestAudioFocus()
-        val waypoints = RouteManager.waypoints
-        val idx = RouteManager.currentWaypointIndex
-        val precision = AppPreferences(applicationContext).gridReferencePrecision
-        if (waypoints.isNotEmpty() && idx < waypoints.size) {
-            val current = waypoints[idx]
-            val next = if (idx < waypoints.size - 1) waypoints[idx + 1] else null
-            if (next != null) {
-                val dist = CoordinateUtils.calculateDistance(current.x, current.y, next.x, next.y)
-                val bearing = CoordinateUtils.calculateBearing(current.x, current.y, next.x, next.y)
-                val gridRef = CoordinateUtils.formatGridReferenceWithLetter(next.x, next.y, precision)
-                val text = "Leg to ${next.name}, grid reference $gridRef. Bearing ${bearing.toInt()} degrees. Distance ${dist.toInt()} meters."
-                ttsManager.speak(text)
-            } else {
-                val gridRef = CoordinateUtils.formatGridReferenceWithLetter(current.x, current.y, precision)
-                ttsManager.speak("Currently at final waypoint ${current.name}, grid reference $gridRef.")
-            }
-        } else {
-            ttsManager.speak("No active route loaded.")
-        }
+        ttsManager.speakLiveStatus()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        requestAudioFocus()
-        mediaSession?.setActive(true)
-        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        if (intent?.action != ACTION_STOP) {
-            mediaButtonPendingIntent?.let {
-                audioManager.registerMediaButtonEventReceiver(it)
-            }
+        if (intent != null) {
+            mediaSession?.let { MediaButtonReceiver.handleIntent(it, intent) }
         }
+
+        requestAudioFocus()
+
         when (intent?.action) {
             ACTION_STOP -> {
-                RouteManager.hikeState = HikeState.IDLE
+                RouteManager.stopHike(AppPreferences(applicationContext))
                 stopLocationUpdates()
                 try {
                     stopForeground(STOP_FOREGROUND_REMOVE)
@@ -1846,7 +2913,10 @@ class HikingForegroundService : Service() {
                 return START_NOT_STICKY
             }
             else -> {
-                RouteManager.hikeState = HikeState.HIKING
+                RouteManager.startHike(AppPreferences(applicationContext))
+                lastCourseCorrectionTime = 0L
+                headingSmoother.reset()
+                persistenceGatekeeper?.reset()
                 val hasFine = ActivityCompat.checkSelfPermission(
                     this,
                     Manifest.permission.ACCESS_FINE_LOCATION
@@ -1862,19 +2932,22 @@ class HikingForegroundService : Service() {
                 } ?: false
 
                 if (!hasFine && !hasCoarse) {
-                    RouteManager.logError("Error: Location permissions (Fine/Coarse) are missing when starting HikingForegroundService.")
                     val notification = createNotification("⚠️ Error: Location Permission Missing!")
                     startForegroundWithNotification(notification)
+                    ttsManager.speak("Error. Location permissions are missing.")
                     return START_STICKY
                 }
 
                 if (!isGpsOn) {
-                    RouteManager.logError("Warning: GPS/Location provider is disabled.")
                     val notification = createNotification("⚠️ Warning: GPS Disabled in Settings!")
                     startForegroundWithNotification(notification)
+                    ttsManager.speak("Warning. GPS is disabled in settings.")
                 } else {
                     val notification = createNotification("Hike Tracking Active (GPS)")
                     startForegroundWithNotification(notification)
+                    mainHandler.postDelayed({
+                        speakCurrentLegStats()
+                    }, 800L)
                 }
 
                 startGpsTracking()
@@ -1886,14 +2959,9 @@ class HikingForegroundService : Service() {
     private fun startForegroundWithNotification(notification: Notification) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
-                val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-                } else {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-                }
+                val serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
                 startForeground(NOTIFICATION_ID, notification, serviceType)
             } catch (e: SecurityException) {
-                RouteManager.logError("SecurityException starting foreground service with location/mediaPlayback type: ${e.message}")
                 startForeground(NOTIFICATION_ID, notification)
             }
         } else {
@@ -1943,7 +3011,6 @@ class HikingForegroundService : Service() {
         ) == PackageManager.PERMISSION_GRANTED
 
         if (!hasFine && !hasCoarse) {
-            RouteManager.logError("Cannot start GPS tracking: Location permission missing.")
             isRunning = false
             return
         }
@@ -1959,12 +3026,7 @@ class HikingForegroundService : Service() {
                 locationCallback,
                 Looper.getMainLooper()
             )
-            RouteManager.logError("High-accuracy GPS tracking requested (1000ms interval).")
-        } catch (e: SecurityException) {
-            RouteManager.logError("SecurityException starting GPS location updates: ${e.message}")
-            isRunning = false
         } catch (e: Exception) {
-            RouteManager.logError("Error starting GPS location updates: ${e.message}")
             isRunning = false
         }
     }
@@ -1972,9 +3034,7 @@ class HikingForegroundService : Service() {
     private fun stopLocationUpdates() {
         try {
             fusedLocationClient.removeLocationUpdates(locationCallback)
-        } catch (e: Exception) {
-            RouteManager.logError("Error removing location updates: ${e.message}")
-        }
+        } catch (e: Exception) { }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -1986,15 +3046,11 @@ class HikingForegroundService : Service() {
         stopLocationUpdates()
         serviceJob.cancel()
         abandonAudioFocus()
-        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        mediaButtonPendingIntent?.let {
-            audioManager.unregisterMediaButtonEventReceiver(it)
-        }
+        stopInaudibleAudioStream()
         mediaSession?.release()
         ttsManager.shutdown()
     }
 }
-
 
 // --- FILE: app/src/main/java/com/example/seebeepee/ui/theme/Type.kt ---
 
@@ -2130,8 +3186,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.FileOpen
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
@@ -2144,13 +3202,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.example.seebeepee.model.HikeState
 import com.example.seebeepee.model.RouteManager
 import com.example.seebeepee.service.HikingForegroundService
-import com.example.seebeepee.ui.theme.SeeBeePeeTheme
 import com.example.seebeepee.util.CoordinateUtils
 import com.example.seebeepee.util.RouteParser
 import com.example.seebeepee.viewmodel.MainViewModel
@@ -2171,10 +3228,13 @@ fun MainScreen(
     val legMetrics = viewModel.legMetrics
     val waypoints = RouteManager.waypoints
 
-    var isTrackingActive by remember { mutableStateOf(false) }
+    var isTrackingActive by remember { mutableStateOf(viewModel.isHikeActive || RouteManager.hikeState == HikeState.HIKING) }
+    LaunchedEffect(viewModel.isHikeActive, RouteManager.hikeState) {
+        isTrackingActive = viewModel.isHikeActive || RouteManager.hikeState == HikeState.HIKING
+    }
     var showSaveGpxDialog by remember { mutableStateOf(false) }
+    var showRoutePickerModal by remember { mutableStateOf(false) }
 
-    // File picker launcher for CSV/GPX route files
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -2182,15 +3242,18 @@ fun MainScreen(
             try {
                 val inputStream = context.contentResolver.openInputStream(uri)
                 val content = inputStream?.bufferedReader()?.use { it.readText() } ?: ""
-                val parsedWaypoints = if (uri.toString().endsWith(".gpx", true) || content.contains("<gpx", true)) {
+                val fileName = RouteParser.extractRouteNameFromUri(context, uri)
+                val isGpx = uri.toString().endsWith(".gpx", true) || content.contains("<gpx", true)
+                val parsedWaypoints = if (isGpx) {
                     RouteParser.parseGpx(content)
                 } else {
                     RouteParser.parseCsv(content)
                 }
 
                 if (parsedWaypoints.isNotEmpty()) {
-                    val fileName = (uri.lastPathSegment ?: "Imported Route").substringBeforeLast(".")
-                    viewModel.loadRoute(fileName, parsedWaypoints)
+                    val filePath = uri.path ?: uri.toString()
+                    val fileUri = uri.toString()
+                    viewModel.loadRoute(fileName, parsedWaypoints, content = content, filePath = filePath, fileUri = fileUri)
                 }
             } catch (e: Exception) {
                 RouteManager.logError("Error opening route file: ${e.message}")
@@ -2198,7 +3261,6 @@ fun MainScreen(
         }
     }
 
-    // Auto-scroll behavior favoring upcoming waypoints
     LaunchedEffect(currentIndex) {
         if (waypoints.isNotEmpty()) {
             val scrollTarget = (currentIndex + 1).coerceAtMost(waypoints.size - 1)
@@ -2208,7 +3270,6 @@ fun MainScreen(
         }
     }
 
-    // Save GPX Dialog when stopping tracking
     if (showSaveGpxDialog) {
         AlertDialog(
             onDismissRequest = { showSaveGpxDialog = false },
@@ -2216,16 +3277,21 @@ fun MainScreen(
             text = { Text("Do you want to save your hike breadcrumbs as a GPX track before stopping?") },
             confirmButton = {
                 TextButton(onClick = {
-                    RouteManager.persistUnsavedBreadcrumbs()
+                    val savedFile = viewModel.finishHike(save = true, context = context)
                     showSaveGpxDialog = false
-                    viewModel.gpsStatus = "Breadcrumbs saved to GPX"
+                    if (savedFile != null) {
+                        val folderName = if (savedFile.parentFile?.name.equals("Download", true)) "Downloads" else (savedFile.parentFile?.name ?: "Downloads")
+                        viewModel.gpsStatus = "Saved to $folderName: ${savedFile.name}"
+                    } else {
+                        viewModel.gpsStatus = "Breadcrumbs saved to GPX"
+                    }
                 }) {
                     Text("Save")
                 }
             },
             dismissButton = {
                 TextButton(onClick = {
-                    RouteManager.clearBreadcrumbs()
+                    viewModel.finishHike(save = false, context = context)
                     showSaveGpxDialog = false
                     viewModel.gpsStatus = "Breadcrumbs discarded"
                 }) {
@@ -2235,10 +3301,47 @@ fun MainScreen(
         )
     }
 
+    if (showRoutePickerModal) {
+        AlertDialog(
+            onDismissRequest = { showRoutePickerModal = false },
+            title = { Text("Select Route") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            val sampleCsv = RouteParser.generateSampleIrishGridCsv()
+                            val sampleWps = RouteParser.parseCsv(sampleCsv)
+                            viewModel.loadRoute("Sample Hike (Irish Grid)", sampleWps, content = sampleCsv)
+                            showRoutePickerModal = false
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Sample Hike (Irish Grid)")
+                    }
+                    Button(
+                        onClick = {
+                            filePickerLauncher.launch(arrayOf("*/*"))
+                            showRoutePickerModal = false
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                    ) {
+                        Text("Import GPX / Route File...")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showRoutePickerModal = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     val hasLocationPermission = remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         )
     }
 
@@ -2316,7 +3419,6 @@ fun MainScreen(
         isGpsEnabled.value = gpsOn
 
         if (!hasLocationPermission.value) {
-            RouteManager.logError("Location permissions missing when starting GPS tracking. Requesting permissions.")
             viewModel.gpsStatus = "Permission Required"
             val permissionsToRequest = mutableListOf(
                 Manifest.permission.ACCESS_FINE_LOCATION,
@@ -2327,10 +3429,10 @@ fun MainScreen(
             }
             permissionLauncher.launch(permissionsToRequest.toTypedArray())
         } else if (!gpsOn) {
-            RouteManager.logError("GPS is disabled when starting GPS tracking.")
             viewModel.gpsStatus = "GPS Disabled"
             showGpsDisabledDialog = true
         } else {
+            viewModel.startHike()
             val serviceIntent = Intent(context, HikingForegroundService::class.java)
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -2340,12 +3442,7 @@ fun MainScreen(
                 }
                 isTrackingActive = true
                 viewModel.gpsStatus = "GPS Tracking Active"
-            } catch (e: SecurityException) {
-                RouteManager.logError("SecurityException starting service: ${e.message}")
-                isTrackingActive = false
-                viewModel.gpsStatus = "Tracking Failed (Permission Denied)"
             } catch (e: Exception) {
-                RouteManager.logError("Error starting service: ${e.message}")
                 isTrackingActive = false
                 viewModel.gpsStatus = "Tracking Failed"
             }
@@ -2375,43 +3472,70 @@ fun MainScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        val routeTitle = RouteManager.currentRouteName.substringBeforeLast(".")
-                        Text(
-                            text = if (routeTitle.equals("No Route Loaded", true)) "No Route Loaded" else routeTitle,
-                            maxLines = 1,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        if (waypoints.isNotEmpty()) {
-                            val totalDistKm = viewModel.totalDistance / 1000.0
-                            val totalClimbM = viewModel.totalClimb
-                            val totalTimeStr = formatHoursMinutes(viewModel.totalTimeRequired)
+            Surface(
+                color = MaterialTheme.colorScheme.primaryContainer,
+                tonalElevation = 3.dp
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             Text(
-                                text = String.format(Locale.US, "Distance %.1fkm Altitude %.0fm Time %s", totalDistKm, totalClimbM, totalTimeStr),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
+                                text = "ACTIVE ROUTE",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                                fontWeight = FontWeight.Bold
                             )
+                            Surface(
+                                onClick = { showRoutePickerModal = true },
+                                color = MaterialTheme.colorScheme.primary,
+                                shape = MaterialTheme.shapes.small
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Text("Change", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
+                                    Icon(imageVector = Icons.Default.KeyboardArrowDown, contentDescription = "Change Route", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onPrimary)
+                                }
+                            }
                         }
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                ),
-                actions = {
-                    // File load icon in the title section to open route file picker
-                    IconButton(onClick = { filePickerLauncher.launch(arrayOf("*/*")) }) {
-                        Icon(
-                            imageVector = Icons.Default.FileOpen,
-                            contentDescription = "Load Route File",
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+
+                    val routeTitle = RouteManager.currentRouteName.substringBeforeLast(".")
+                    Text(
+                        text = if (routeTitle.equals("No Route Loaded", true)) "No Route Loaded" else routeTitle,
+                        maxLines = 1,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+
+                    if (waypoints.isNotEmpty()) {
+                        val totalDistKm = viewModel.totalDistance / 1000.0
+                        val totalClimbM = viewModel.totalClimb
+                        val totalTimeStr = formatHoursMinutes(viewModel.totalTimeRequired)
+                        Text(
+                            text = String.format(Locale.US, "Distance %.1fkm • Altitude %.0fm • Time %s", totalDistKm, totalClimbM, totalTimeStr),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
                         )
                     }
                 }
-            )
+            }
         },
         bottomBar = {
             Surface(
@@ -2428,18 +3552,14 @@ fun MainScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Start / Finish Button
                     Button(
                         onClick = {
                             if (isTrackingActive) {
+                                viewModel.stopHike()
                                 val serviceIntent = Intent(context, HikingForegroundService::class.java).apply {
                                     action = HikingForegroundService.ACTION_STOP
                                 }
-                                try {
-                                    context.startService(serviceIntent)
-                                } catch (e: Exception) {
-                                    RouteManager.logError("Error stopping tracking service: ${e.message}")
-                                }
+                                context.startService(serviceIntent)
                                 isTrackingActive = false
                                 viewModel.gpsStatus = "GPS Tracking Paused"
                                 showSaveGpxDialog = true
@@ -2465,7 +3585,6 @@ fun MainScreen(
                         Text(if (isTrackingActive) "Finish" else "Start", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
 
-                    // Map Screen Button (Globe / Map icon)
                     OutlinedButton(
                         onClick = onNavigateToMap,
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
@@ -2479,7 +3598,6 @@ fun MainScreen(
                         Text("Map", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
 
-                    // Settings Button (Gear icon)
                     IconButton(
                         onClick = { viewModel.showSettings = !viewModel.showSettings },
                         modifier = Modifier.size(48.dp)
@@ -2506,131 +3624,10 @@ fun MainScreen(
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Warning Banner for Missing Location Permission
-                if (!hasLocationPermission.value) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(
-                                text = "⚠️ Location Permission Required",
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Text(
-                                text = "SeeBeePee requires location permission to track your hike, record breadcrumbs, and calculate legs.",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Button(
-                                onClick = {
-                                    val permissionsToRequest = mutableListOf(
-                                        Manifest.permission.ACCESS_FINE_LOCATION,
-                                        Manifest.permission.ACCESS_COARSE_LOCATION
-                                    )
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                        permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
-                                    }
-                                    permissionLauncher.launch(permissionsToRequest.toTypedArray())
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                            ) {
-                                Text("Grant Location & Notification Permission")
-                            }
-                        }
-                    }
-                }
-
-                // Warning Banner for GPS Disabled
-                if (hasLocationPermission.value && !isGpsEnabled.value) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(
-                                text = "⚠️ GPS / Location Services Disabled",
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Text(
-                                text = "GPS provider is turned off in device settings. Please enable GPS for real-time tracking.",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Button(
-                                onClick = {
-                                    try {
-                                        context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
-                                    } catch (e: Exception) {
-                                        RouteManager.logError("Error opening location settings: ${e.message}")
-                                    }
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                            ) {
-                                Text("Enable GPS in Settings")
-                            }
-                        }
-                    }
-                }
-
-                // First-Run Onboarding Banner if no route is loaded
-                if (waypoints.isEmpty()) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(
-                                text = "Welcome to SeeBeePee Hike Navigator!",
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Text(
-                                text = "Get started by opening a route file (CSV / GPX) or generating a sample Irish Grid route.",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = { filePickerLauncher.launch(arrayOf("*/*")) },
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text("Open Route File")
-                                }
-                                Button(
-                                    onClick = {
-                                        val sampleCsv = RouteParser.generateSampleIrishGridCsv()
-                                        val sampleWps = RouteParser.parseCsv(sampleCsv)
-                                        viewModel.loadRoute("Sample Irish Grid Hike", sampleWps)
-                                    },
-                                    modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                                ) {
-                                    Text("Load Sample CSV")
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // 1. Top Section (Current Leg): Position, Bearing, Distance, Time, Target using 6-digit grid references
+                // 1. Redesigned Streamlined Current Leg / GPS Status Card
                 CurrentLegMetricsCard(viewModel = viewModel)
 
-                // 2. Waypoint Table: Compact rows using 6-digit grid reference values, no final totals row
+                // 2. Waypoint Table Card
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2737,11 +3734,11 @@ fun MainScreen(
                     }
                 }
 
-                // 3. Overall Hike Statistics: Condensed two-line format
+                // 3. Redesigned Streamlined Overall Hike Statistics Card
                 OverallHikeStatsCard(viewModel = viewModel)
             }
 
-            // Settings Overlay Panel (Instant persistence as soon as changed, no Apply button)
+            // Settings Overlay Panel
             AnimatedVisibility(
                 visible = viewModel.showSettings,
                 enter = fadeIn(),
@@ -2757,13 +3754,15 @@ fun MainScreen(
                 ) {
                     Card(
                         modifier = Modifier
-                            .fillMaxWidth(0.9f)
-                            .wrapContentHeight()
+                            .fillMaxWidth(0.92f)
+                            .fillMaxHeight(0.85f)
                             .clickable(enabled = false) {},
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                     ) {
                         Column(
-                            modifier = Modifier.padding(16.dp),
+                            modifier = Modifier
+                                .padding(16.dp)
+                                .verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             Text(
@@ -2773,7 +3772,6 @@ fun MainScreen(
                                 color = MaterialTheme.colorScheme.primary
                             )
 
-                            // Flat Pace Slider
                             Column {
                                 Text(text = "Flat Pace: ${viewModel.flatPace.toInt()} min/km", fontSize = 13.sp)
                                 Slider(
@@ -2784,7 +3782,6 @@ fun MainScreen(
                                 )
                             }
 
-                            // Climb Penalty Slider
                             Column {
                                 Text(text = "Climb Penalty: ${String.format(Locale.US, "%.1f", viewModel.climbPenalty)} min / 10m", fontSize = 13.sp)
                                 Slider(
@@ -2795,7 +3792,6 @@ fun MainScreen(
                                 )
                             }
 
-                            // Coordinate System selector
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -2822,7 +3818,6 @@ fun MainScreen(
                                 }
                             }
 
-                            // Grid Reference Precision selector (when coordinate system is grid)
                             if (viewModel.coordinateSystem == "grid") {
                                 Column(
                                     modifier = Modifier.fillMaxWidth(),
@@ -2848,7 +3843,6 @@ fun MainScreen(
                                 }
                             }
 
-                            // Voice alerts toggle
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -2861,7 +3855,6 @@ fun MainScreen(
                                 )
                             }
 
-                            // Cone angle slider
                             Column {
                                 Text(text = "Off-Course Cone Angle: ${viewModel.coneAngle.toInt()}°", fontSize = 13.sp)
                                 Slider(
@@ -2872,29 +3865,54 @@ fun MainScreen(
                                 )
                             }
 
-                            Spacer(modifier = Modifier.height(4.dp))
+                            Column {
+                                Text(text = "Loopback Distance (D_loopback): ${viewModel.loopbackDistance.toInt()}m", fontSize = 13.sp)
+                                Slider(
+                                    value = viewModel.loopbackDistance.toFloat(),
+                                    onValueChange = { viewModel.updateLoopbackDistance(it.toDouble()) },
+                                    valueRange = 5f..50f,
+                                    steps = 8
+                                )
+                            }
 
-                            // Route Load / Generate Sample Buttons in Settings
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = { filePickerLauncher.launch(arrayOf("*/*")) },
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text("Open Route File", fontSize = 11.sp)
-                                }
-                                Button(
-                                    onClick = {
-                                        val sampleCsv = RouteParser.generateSampleIrishGridCsv()
-                                        val sampleWps = RouteParser.parseCsv(sampleCsv)
-                                        viewModel.loadRoute("Sample Irish Grid Hike", sampleWps)
-                                    },
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text("Generate Sample", fontSize = 11.sp)
-                                }
+                            Column {
+                                Text(text = "Low-Speed Cutoff: ${String.format(Locale.US, "%.1f", viewModel.lowSpeedCutoff)} km/h", fontSize = 13.sp)
+                                Slider(
+                                    value = viewModel.lowSpeedCutoff.toFloat(),
+                                    onValueChange = { viewModel.updateLowSpeedCutoff(it.toDouble()) },
+                                    valueRange = 0.5f..3.0f,
+                                    steps = 25
+                                )
+                            }
+
+                            Column {
+                                Text(text = "Off-Course Persistence: ${viewModel.persistenceFixes} fixes", fontSize = 13.sp)
+                                Slider(
+                                    value = viewModel.persistenceFixes.toFloat(),
+                                    onValueChange = { viewModel.updatePersistenceFixes(it.toInt()) },
+                                    valueRange = 1f..5f,
+                                    steps = 3
+                                )
+                            }
+
+                            Column {
+                                Text(text = "Waypoint Arrival Threshold: ${viewModel.arrivalThreshold.toInt()}m", fontSize = 13.sp)
+                                Slider(
+                                    value = viewModel.arrivalThreshold.toFloat(),
+                                    onValueChange = { viewModel.updateArrivalThreshold(it.toDouble()) },
+                                    valueRange = 5f..50f,
+                                    steps = 45
+                                )
+                            }
+
+                            Column {
+                                Text(text = "Near-Miss Threshold: ${viewModel.nearMissThreshold.toInt()}m", fontSize = 13.sp)
+                                Slider(
+                                    value = viewModel.nearMissThreshold.toFloat(),
+                                    onValueChange = { viewModel.updateNearMissThreshold(it.toDouble()) },
+                                    valueRange = 20f..100f,
+                                    steps = 80
+                                )
                             }
 
                             Button(
@@ -2930,8 +3948,8 @@ fun CurrentLegMetricsCard(viewModel: MainViewModel) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
     ) {
         Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -2939,26 +3957,29 @@ fun CurrentLegMetricsCard(viewModel: MainViewModel) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Position: $posStr",
-                    style = MaterialTheme.typography.bodyMedium,
+                    text = "GPS: $posStr",
+                    style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
                 Text(
                     text = viewModel.gpsStatus,
                     style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.primary
                 )
             }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.15f))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                MetricItem("Bearing", if (currentLeg != null && targetWp != null) "${String.format(Locale.US, "%.0f", currentLeg.bearing)}°" else "-")
-                MetricItem("Distance", if (currentLeg != null && targetWp != null) "${String.format(Locale.US, "%.0f", currentLeg.distanceMeters)}m" else "-")
-                MetricItem("Time", if (currentLeg != null && targetWp != null) "${String.format(Locale.US, "%.1f", currentLeg.timeMinutes)}m" else "-")
-                MetricItem("Target", targetWp?.name ?: "Finished")
+                StatColumn("Bearing", if (currentLeg != null && targetWp != null) "${String.format(Locale.US, "%.0f", currentLeg.bearing)}°" else "-")
+                StatColumn("Distance", if (currentLeg != null && targetWp != null) "${String.format(Locale.US, "%.0f", currentLeg.distanceMeters)}m" else "-")
+                StatColumn("Time", if (currentLeg != null && targetWp != null) "${String.format(Locale.US, "%.1f", currentLeg.timeMinutes)}m" else "-")
+                StatColumn("Target", targetWp?.name ?: "Finished")
             }
         }
     }
@@ -2978,8 +3999,8 @@ fun OverallHikeStatsCard(viewModel: MainViewModel) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
     ) {
         Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
                 text = "Overall Hike Statistics",
@@ -2987,23 +4008,30 @@ fun OverallHikeStatsCard(viewModel: MainViewModel) {
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSecondaryContainer
             )
-            // Condensed two-line format:
-            // Distance: X.Xkm Altitude: Xm Time: hh:mm % XX%
-            Text(
-                text = String.format(Locale.US, "Distance: %.1fkm  Altitude: %.0fm  Time: %s  %% %d%%", distKm, altitudeM, timeStr, completionPct),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSecondaryContainer
-            )
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.15f))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                StatColumn("Distance", String.format(Locale.US, "%.1fkm", distKm), isSecondary = true)
+                StatColumn("Altitude", String.format(Locale.US, "%.0fm", altitudeM), isSecondary = true)
+                StatColumn("Time", timeStr, isSecondary = true)
+                StatColumn("Complete", "$completionPct%", isSecondary = true)
+            }
         }
     }
 }
 
 @Composable
-fun MetricItem(label: String, value: String) {
-    Column {
-        Text(text = label, fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
-        Text(text = value, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+fun StatColumn(label: String, value: String, isSecondary: Boolean = false) {
+    val labelColor = if (isSecondary) MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+    val valueColor = if (isSecondary) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onPrimaryContainer
+
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(text = label, fontSize = 11.sp, color = labelColor)
+        Text(text = value, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = valueColor)
     }
 }
 
@@ -3013,15 +4041,6 @@ fun formatHoursMinutes(totalMinutes: Double): String {
     val mins = totalMinsInt % 60
     return String.format(Locale.US, "%02d:%02d", hours, mins)
 }
-
-@Preview(showBackground = true)
-@Composable
-fun MainScreenPreview() {
-    SeeBeePeeTheme {
-        // MainScreen(...)
-    }
-}
-
 
 // --- FILE: app/src/main/java/com/example/seebeepee/ui/MapScreen.kt ---
 
@@ -3049,13 +4068,14 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.seebeepee.model.RouteManager
-import com.example.seebeepee.model.Waypoint
 import com.example.seebeepee.util.CoordinateUtils
 import com.example.seebeepee.viewmodel.MainViewModel
 import java.util.Locale
@@ -3159,11 +4179,51 @@ fun MapScreen(
 
                     // 1. Draw 1km Coordinate Gridlines & Two-Digit Grid Markings (no N, E, or trailing zeros)
                     if (viewModel.showGridlines) {
+                        val visibleMinX = centerX + (- (canvasWidth / 2f) - pan.x) / scale
+                        val visibleMaxX = centerX + ((canvasWidth / 2f) - pan.x) / scale
+                        val visibleMinY = centerY + (- (canvasHeight / 2f) - pan.y) / scale
+                        val visibleMaxY = centerY + ((canvasHeight / 2f) + pan.y) / scale
+
+                        // Draw 100m grid lines (multiples of 100 meters) across dynamically visible viewport bounds (using previous 1k stroke width and opacity so they are clearly visible)
+                        val gridSpacing100m = 100.0
+                        val startGrid100X = (visibleMinX / gridSpacing100m).toInt() * gridSpacing100m - gridSpacing100m
+                        val endGrid100X = (visibleMaxX / gridSpacing100m).toInt() * gridSpacing100m + gridSpacing100m
+                        val startGrid100Y = (visibleMinY / gridSpacing100m).toInt() * gridSpacing100m - gridSpacing100m
+                        val endGrid100Y = (visibleMaxY / gridSpacing100m).toInt() * gridSpacing100m + gridSpacing100m
+
+                        var gx100 = startGrid100X
+                        while (gx100 <= endGrid100X) {
+                            if (abs(gx100 % 1000.0) > 1e-5) {
+                                val p1 = project(gx100, minY - 1000.0)
+                                drawLine(
+                                    color = Color.LightGray.copy(alpha = 0.4f),
+                                    start = Offset(p1.x, 0f),
+                                    end = Offset(p1.x, canvasHeight),
+                                    strokeWidth = 1f
+                                )
+                            }
+                            gx100 += gridSpacing100m
+                        }
+
+                        var gy100 = startGrid100Y
+                        while (gy100 <= endGrid100Y) {
+                            if (abs(gy100 % 1000.0) > 1e-5) {
+                                val p1 = project(minX - 1000.0, gy100)
+                                drawLine(
+                                    color = Color.LightGray.copy(alpha = 0.4f),
+                                    start = Offset(0f, p1.y),
+                                    end = Offset(canvasWidth, p1.y),
+                                    strokeWidth = 1f
+                                )
+                            }
+                            gy100 += gridSpacing100m
+                        }
+
                         val gridSpacingMeters = 1000.0
-                        val startGridX = (minX / gridSpacingMeters).toInt() * gridSpacingMeters - gridSpacingMeters
-                        val endGridX = (maxX / gridSpacingMeters).toInt() * gridSpacingMeters + gridSpacingMeters
-                        val startGridY = (minY / gridSpacingMeters).toInt() * gridSpacingMeters - gridSpacingMeters
-                        val endGridY = (maxY / gridSpacingMeters).toInt() * gridSpacingMeters + gridSpacingMeters
+                        val startGridX = (visibleMinX / gridSpacingMeters).toInt() * gridSpacingMeters - gridSpacingMeters
+                        val endGridX = (visibleMaxX / gridSpacingMeters).toInt() * gridSpacingMeters + gridSpacingMeters
+                        val startGridY = (visibleMinY / gridSpacingMeters).toInt() * gridSpacingMeters - gridSpacingMeters
+                        val endGridY = (visibleMaxY / gridSpacingMeters).toInt() * gridSpacingMeters + gridSpacingMeters
 
                         val gridTextPaint = Paint().apply {
                             color = android.graphics.Color.GRAY
@@ -3175,10 +4235,10 @@ fun MapScreen(
                         while (gx <= endGridX) {
                             val p1 = project(gx, minY - 1000.0)
                             drawLine(
-                                color = Color.LightGray.copy(alpha = 0.4f),
+                                color = Color.LightGray.copy(alpha = 0.65f),
                                 start = Offset(p1.x, 0f),
                                 end = Offset(p1.x, canvasHeight),
-                                strokeWidth = 1f
+                                strokeWidth = 2f
                             )
                             val gridNum = ((gx % 100000.0) / 1000.0).toInt() % 100
                             val labelText = String.format(Locale.US, "%02d", gridNum)
@@ -3195,10 +4255,10 @@ fun MapScreen(
                         while (gy <= endGridY) {
                             val p1 = project(minX - 1000.0, gy)
                             drawLine(
-                                color = Color.LightGray.copy(alpha = 0.4f),
+                                color = Color.LightGray.copy(alpha = 0.65f),
                                 start = Offset(0f, p1.y),
                                 end = Offset(canvasWidth, p1.y),
-                                strokeWidth = 1f
+                                strokeWidth = 2f
                             )
                             val gridNum = ((gy % 100000.0) / 1000.0).toInt() % 100
                             val labelText = String.format(Locale.US, "%02d", gridNum)
@@ -3271,19 +4331,105 @@ fun MapScreen(
                         }
                     }
 
-                    // 3. Speed-Graded Breadcrumbs Trail
+                    // 3. Speed-Graded Breadcrumbs Trail & Line Segments
                     if (viewModel.showBreadcrumbs && breadcrumbs.isNotEmpty()) {
                         for (i in breadcrumbs.indices) {
                             val bc = breadcrumbs[i]
                             val p = project(bc.x, bc.y)
                             val speed = if (i > 0) CoordinateUtils.calculateSpeed(breadcrumbs[i - 1], bc) else 0.0
                             val bcColor = speedToColor(speed)
+
+                            if (i > 0) {
+                                val pPrev = project(breadcrumbs[i - 1].x, breadcrumbs[i - 1].y)
+                                drawLine(
+                                    color = bcColor,
+                                    start = pPrev,
+                                    end = p,
+                                    strokeWidth = 4f
+                                )
+                            }
+
                             drawCircle(
                                 color = bcColor,
                                 radius = 5f,
                                 center = p
                             )
                         }
+                    }
+
+                    // Live Position & Target Waypoint Projections for Map Canvas Overlays
+                    val currentPos = viewModel.getCurrentPositionMetric()
+                    val posScreen = project(currentPos.first, currentPos.second)
+
+                    val currentWaypointIndex = viewModel.currentIndex
+                    val targetWaypointIndex = minOf(currentWaypointIndex + 1, waypoints.size - 1)
+                    val targetWp = waypoints[targetWaypointIndex]
+                    val targetScreen = project(targetWp.x, targetWp.y)
+
+                    // 3a. Dashed Target Line
+                    if (posScreen != targetScreen) {
+                        drawLine(
+                            color = Color(0xFFD32F2F),
+                            start = posScreen,
+                            end = targetScreen,
+                            strokeWidth = 3f,
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(15f, 10f), 0f)
+                        )
+                    }
+
+                    // 3b. Current Location Marker
+                    drawCircle(
+                        color = Color(0xFF1976D2),
+                        radius = 8f,
+                        center = posScreen
+                    )
+                    drawCircle(
+                        color = Color.White,
+                        radius = 3.5f,
+                        center = posScreen
+                    )
+
+                    // 3c. Stabilized Heading Arrow
+                    val stabilizedBearing = CoordinateUtils.calculateStabilizedHikerBearing(breadcrumbs)
+                    if (stabilizedBearing != null) {
+                        val rad = Math.toRadians(stabilizedBearing)
+                        val ux = sin(rad).toFloat()
+                        val uy = -cos(rad).toFloat()
+
+                        val arrowLength = 22f
+                        val tip = Offset(posScreen.x + ux * arrowLength, posScreen.y + uy * arrowLength)
+
+                        val px = -uy
+                        val py = ux
+                        val wingBack = 8f
+                        val wingWidth = 6f
+
+                        val w1 = Offset(
+                            tip.x - ux * wingBack + px * wingWidth,
+                            tip.y - uy * wingBack + py * wingWidth
+                        )
+                        val w2 = Offset(
+                            tip.x - ux * wingBack - px * wingWidth,
+                            tip.y - uy * wingBack - py * wingWidth
+                        )
+
+                        val arrowPath = Path().apply {
+                            moveTo(tip.x, tip.y)
+                            lineTo(w1.x, w1.y)
+                            lineTo(w2.x, w2.y)
+                            close()
+                        }
+
+                        drawLine(
+                            color = Color(0xFF0D47A1),
+                            start = posScreen,
+                            end = tip,
+                            strokeWidth = 3f
+                        )
+                        drawPath(
+                            path = arrowPath,
+                            color = Color(0xFF0D47A1)
+                        )
                     }
 
                     // 4. Waypoint Label Deduplication & Drawing
@@ -3293,11 +4439,33 @@ fun MapScreen(
                         groupedWps.values.forEach { group ->
                             val wp = group.first()
                             val p = project(wp.x, wp.y)
-                            val isCurrent = group.any { waypoints.indexOf(it) == viewModel.currentIndex }
-                            val radius = if (isCurrent) 14f else 8f
+                            val isCurrent = group.any { waypoints.indexOf(it) == currentWaypointIndex }
+                            val isTarget = group.any { waypoints.indexOf(it) == targetWaypointIndex }
+
+                            val radius = when {
+                                isCurrent -> 14f
+                                isTarget -> 12f
+                                else -> 8f
+                            }
+
+                            // Render target waypoint with a distinct visual highlight (prominent accent outline / ring)
+                            if (isTarget && targetWaypointIndex != currentWaypointIndex) {
+                                drawCircle(
+                                    color = Color(0xFFFF8F00), // Amber / Gold accent outline
+                                    radius = radius + 5f,
+                                    center = p,
+                                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f)
+                                )
+                            }
+
+                            val markerColor = when {
+                                isCurrent -> Color(0xFFD32F2F)
+                                isTarget -> Color(0xFFFF8F00)
+                                else -> Color(0xFF424242)
+                            }
 
                             drawCircle(
-                                color = if (isCurrent) Color(0xFFD32F2F) else Color(0xFF424242),
+                                color = markerColor,
                                 radius = radius,
                                 center = p
                             )
@@ -3380,8 +4548,6 @@ fun MapScreen(
                     }
 
                     // 5. Out-of-Bounds Indicator
-                    val currentPos = viewModel.getCurrentPositionMetric()
-                    val posScreen = project(currentPos.first, currentPos.second)
                     if (posScreen.x < 0f || posScreen.x > canvasWidth || posScreen.y < 0f || posScreen.y > canvasHeight) {
                         val currWp = waypoints[viewModel.currentIndex]
                         val dist = CoordinateUtils.calculateDistance(currWp.x, currWp.y, currentPos.first, currentPos.second)
@@ -3572,253 +4738,3 @@ private fun speedToColor(speedKmh: Double): Color {
         }
     }
 }
-
-
-// --- FILE: app/src/main/AndroidManifest.xml ---
-
-<?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
-
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.BLUETOOTH" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-
-    <application
-        android:allowBackup="true"
-        android:dataExtractionRules="@xml/data_extraction_rules"
-        android:fullBackupContent="@xml/backup_rules"
-        android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
-        android:roundIcon="@mipmap/ic_launcher_round"
-        android:supportsRtl="true"
-        android:theme="@style/Theme.SeeBeePee">
-        <service
-            android:name=".service.HikingForegroundService"
-            android:foregroundServiceType="location|mediaPlayback"
-            android:exported="false" />
-
-        <receiver
-            android:name=".service.MediaButtonBroadcastReceiver"
-            android:exported="true"
-            android:priority="9999">
-            <intent-filter>
-                <action android:name="android.intent.action.MEDIA_BUTTON" />
-            </intent-filter>
-        </receiver>
-        <activity
-            android:name=".MainActivity"
-            android:exported="true"
-            android:label="@string/app_name"
-            android:theme="@style/Theme.SeeBeePee"
-            android:windowSoftInputMode="adjustResize">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-    </application>
-
-</manifest>
-
-// --- FILE: app/src/main/res/values/colors.xml ---
-
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <color name="purple_200">#FFBB86FC</color>
-    <color name="purple_500">#FF6200EE</color>
-    <color name="purple_700">#FF3700B3</color>
-    <color name="teal_200">#FF03DAC5</color>
-    <color name="teal_700">#FF018786</color>
-    <color name="black">#FF000000</color>
-    <color name="white">#FFFFFFFF</color>
-</resources>
-
-// --- FILE: app/src/main/res/values/strings.xml ---
-
-<resources>
-    <string name="app_name">SeeBeePee</string>
-</resources>
-
-// --- FILE: app/src/main/res/values/themes.xml ---
-
-<resources>
-
-    <style name="Theme.SeeBeePee" parent="Theme.MaterialComponents.Light" />
-</resources>
-
-// --- FILE: app/src/main/res/drawable/ic_launcher_background.xml ---
-
-<?xml version="1.0" encoding="utf-8"?>
-<vector
-    android:height="108dp"
-    android:width="108dp"
-    android:viewportHeight="108"
-    android:viewportWidth="108"
-    xmlns:android="http://schemas.android.com/apk/res/android">
-    <path android:fillColor="#3DDC84"
-          android:pathData="M0,0h108v108h-108z"/>
-    <path android:fillColor="#00000000" android:pathData="M9,0L9,108"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M19,0L19,108"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M29,0L29,108"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M39,0L39,108"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M49,0L49,108"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M59,0L59,108"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M69,0L69,108"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M79,0L79,108"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M89,0L89,108"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M99,0L99,108"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M0,9L108,9"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M0,19L108,19"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M0,29L108,29"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M0,39L108,39"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M0,49L108,49"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M0,59L108,59"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M0,69L108,69"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M0,79L108,79"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M0,89L108,89"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M0,99L108,99"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M19,29L89,29"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M19,39L89,39"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M19,49L89,49"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M19,59L89,59"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M19,69L89,69"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M19,79L89,79"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M29,19L29,89"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M39,19L39,89"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M49,19L49,89"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M59,19L59,89"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M69,19L69,89"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-    <path android:fillColor="#00000000" android:pathData="M79,19L79,89"
-          android:strokeColor="#33FFFFFF" android:strokeWidth="0.8"/>
-</vector>
-
-
-// --- FILE: app/src/main/res/drawable/ic_launcher_foreground.xml ---
-
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:aapt="http://schemas.android.com/aapt"
-    android:width="108dp"
-    android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-    <path android:pathData="M31,63.928c0,0 6.4,-11 12.1,-13.1c7.2,-2.6 26,-1.4 26,-1.4l38.1,38.1L107,108.928l-32,-1L31,63.928z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:endX="85.84757"
-                android:endY="92.4963"
-                android:startX="42.9492"
-                android:startY="49.59793"
-                android:type="linear">
-                <item
-                    android:color="#44000000"
-                    android:offset="0.0" />
-                <item
-                    android:color="#00000000"
-                    android:offset="1.0" />
-            </gradient>
-        </aapt:attr>
-    </path>
-    <path
-        android:fillColor="#FFFFFF"
-        android:fillType="nonZero"
-        android:pathData="M65.3,45.828l3.8,-6.6c0.2,-0.4 0.1,-0.9 -0.3,-1.1c-0.4,-0.2 -0.9,-0.1 -1.1,0.3l-3.9,6.7c-6.3,-2.8 -13.4,-2.8 -19.7,0l-3.9,-6.7c-0.2,-0.4 -0.7,-0.5 -1.1,-0.3C38.8,38.328 38.7,38.828 38.9,39.228l3.8,6.6C36.2,49.428 31.7,56.028 31,63.928h46C76.3,56.028 71.8,49.428 65.3,45.828zM43.4,57.328c-0.8,0 -1.5,-0.5 -1.8,-1.2c-0.3,-0.7 -0.1,-1.5 0.4,-2.1c0.5,-0.5 1.4,-0.7 2.1,-0.4c0.7,0.3 1.2,1 1.2,1.8C45.3,56.528 44.5,57.328 43.4,57.328L43.4,57.328zM64.6,57.328c-0.8,0 -1.5,-0.5 -1.8,-1.2s-0.1,-1.5 0.4,-2.1c0.5,-0.5 1.4,-0.7 2.1,-0.4c0.7,0.3 1.2,1 1.2,1.8C66.5,56.528 65.6,57.328 64.6,57.328L64.6,57.328z"
-        android:strokeWidth="1"
-        android:strokeColor="#00000000" />
-</vector>
-
-// --- FILE: app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml ---
-
-<?xml version="1.0" encoding="utf-8"?>
-<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@drawable/ic_launcher_background"/>
-    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
-    <monochrome android:drawable="@mipmap/ic_launcher_foreground"/>
-</adaptive-icon>
-
-// --- FILE: app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml ---
-
-<?xml version="1.0" encoding="utf-8"?>
-<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@drawable/ic_launcher_background"/>
-    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
-    <monochrome android:drawable="@mipmap/ic_launcher_foreground"/>
-</adaptive-icon>
-
-// --- FILE: app/src/main/res/xml/data_extraction_rules.xml ---
-
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample data extraction rules file; uncomment and customize as necessary.
-   See https://developer.android.com/about/versions/12/backup-restore#xml-changes
-   for details.
--->
-<data-extraction-rules>
-    <cloud-backup>
-        <!-- TODO: Use <include> and <exclude> to control what is backed up.
-        <include .../>
-        <exclude .../>
-        -->
-    </cloud-backup>
-    <!--
-    <device-transfer>
-        <include .../>
-        <exclude .../>
-    </device-transfer>
-    -->
-</data-extraction-rules>
-
-// --- FILE: app/src/main/res/xml/backup_rules.xml ---
-
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
-   See https://developer.android.com/guide/topics/data/autobackup
-   for details.
-   Note: This file is ignored for devices older than API 31
-   See https://developer.android.com/about/versions/12/backup-restore
--->
-<full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
-</full-backup-content>

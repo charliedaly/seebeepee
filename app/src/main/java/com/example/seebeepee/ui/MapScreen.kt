@@ -22,13 +22,14 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.seebeepee.model.RouteManager
-import com.example.seebeepee.model.Waypoint
 import com.example.seebeepee.util.CoordinateUtils
 import com.example.seebeepee.viewmodel.MainViewModel
 import java.util.Locale
@@ -132,11 +133,51 @@ fun MapScreen(
 
                     // 1. Draw 1km Coordinate Gridlines & Two-Digit Grid Markings (no N, E, or trailing zeros)
                     if (viewModel.showGridlines) {
+                        val visibleMinX = centerX + (- (canvasWidth / 2f) - pan.x) / scale
+                        val visibleMaxX = centerX + ((canvasWidth / 2f) - pan.x) / scale
+                        val visibleMinY = centerY + (- (canvasHeight / 2f) - pan.y) / scale
+                        val visibleMaxY = centerY + ((canvasHeight / 2f) + pan.y) / scale
+
+                        // Draw 100m grid lines (multiples of 100 meters) across dynamically visible viewport bounds (using previous 1k stroke width and opacity so they are clearly visible)
+                        val gridSpacing100m = 100.0
+                        val startGrid100X = (visibleMinX / gridSpacing100m).toInt() * gridSpacing100m - gridSpacing100m
+                        val endGrid100X = (visibleMaxX / gridSpacing100m).toInt() * gridSpacing100m + gridSpacing100m
+                        val startGrid100Y = (visibleMinY / gridSpacing100m).toInt() * gridSpacing100m - gridSpacing100m
+                        val endGrid100Y = (visibleMaxY / gridSpacing100m).toInt() * gridSpacing100m + gridSpacing100m
+
+                        var gx100 = startGrid100X
+                        while (gx100 <= endGrid100X) {
+                            if (abs(gx100 % 1000.0) > 1e-5) {
+                                val p1 = project(gx100, minY - 1000.0)
+                                drawLine(
+                                    color = Color.LightGray.copy(alpha = 0.4f),
+                                    start = Offset(p1.x, 0f),
+                                    end = Offset(p1.x, canvasHeight),
+                                    strokeWidth = 1f
+                                )
+                            }
+                            gx100 += gridSpacing100m
+                        }
+
+                        var gy100 = startGrid100Y
+                        while (gy100 <= endGrid100Y) {
+                            if (abs(gy100 % 1000.0) > 1e-5) {
+                                val p1 = project(minX - 1000.0, gy100)
+                                drawLine(
+                                    color = Color.LightGray.copy(alpha = 0.4f),
+                                    start = Offset(0f, p1.y),
+                                    end = Offset(canvasWidth, p1.y),
+                                    strokeWidth = 1f
+                                )
+                            }
+                            gy100 += gridSpacing100m
+                        }
+
                         val gridSpacingMeters = 1000.0
-                        val startGridX = (minX / gridSpacingMeters).toInt() * gridSpacingMeters - gridSpacingMeters
-                        val endGridX = (maxX / gridSpacingMeters).toInt() * gridSpacingMeters + gridSpacingMeters
-                        val startGridY = (minY / gridSpacingMeters).toInt() * gridSpacingMeters - gridSpacingMeters
-                        val endGridY = (maxY / gridSpacingMeters).toInt() * gridSpacingMeters + gridSpacingMeters
+                        val startGridX = (visibleMinX / gridSpacingMeters).toInt() * gridSpacingMeters - gridSpacingMeters
+                        val endGridX = (visibleMaxX / gridSpacingMeters).toInt() * gridSpacingMeters + gridSpacingMeters
+                        val startGridY = (visibleMinY / gridSpacingMeters).toInt() * gridSpacingMeters - gridSpacingMeters
+                        val endGridY = (visibleMaxY / gridSpacingMeters).toInt() * gridSpacingMeters + gridSpacingMeters
 
                         val gridTextPaint = Paint().apply {
                             color = android.graphics.Color.GRAY
@@ -148,10 +189,10 @@ fun MapScreen(
                         while (gx <= endGridX) {
                             val p1 = project(gx, minY - 1000.0)
                             drawLine(
-                                color = Color.LightGray.copy(alpha = 0.4f),
+                                color = Color.LightGray.copy(alpha = 0.65f),
                                 start = Offset(p1.x, 0f),
                                 end = Offset(p1.x, canvasHeight),
-                                strokeWidth = 1f
+                                strokeWidth = 2f
                             )
                             val gridNum = ((gx % 100000.0) / 1000.0).toInt() % 100
                             val labelText = String.format(Locale.US, "%02d", gridNum)
@@ -168,10 +209,10 @@ fun MapScreen(
                         while (gy <= endGridY) {
                             val p1 = project(minX - 1000.0, gy)
                             drawLine(
-                                color = Color.LightGray.copy(alpha = 0.4f),
+                                color = Color.LightGray.copy(alpha = 0.65f),
                                 start = Offset(0f, p1.y),
                                 end = Offset(canvasWidth, p1.y),
-                                strokeWidth = 1f
+                                strokeWidth = 2f
                             )
                             val gridNum = ((gy % 100000.0) / 1000.0).toInt() % 100
                             val labelText = String.format(Locale.US, "%02d", gridNum)
@@ -244,19 +285,105 @@ fun MapScreen(
                         }
                     }
 
-                    // 3. Speed-Graded Breadcrumbs Trail
+                    // 3. Speed-Graded Breadcrumbs Trail & Line Segments
                     if (viewModel.showBreadcrumbs && breadcrumbs.isNotEmpty()) {
                         for (i in breadcrumbs.indices) {
                             val bc = breadcrumbs[i]
                             val p = project(bc.x, bc.y)
                             val speed = if (i > 0) CoordinateUtils.calculateSpeed(breadcrumbs[i - 1], bc) else 0.0
                             val bcColor = speedToColor(speed)
+
+                            if (i > 0) {
+                                val pPrev = project(breadcrumbs[i - 1].x, breadcrumbs[i - 1].y)
+                                drawLine(
+                                    color = bcColor,
+                                    start = pPrev,
+                                    end = p,
+                                    strokeWidth = 4f
+                                )
+                            }
+
                             drawCircle(
                                 color = bcColor,
                                 radius = 5f,
                                 center = p
                             )
                         }
+                    }
+
+                    // Live Position & Target Waypoint Projections for Map Canvas Overlays
+                    val currentPos = viewModel.getCurrentPositionMetric()
+                    val posScreen = project(currentPos.first, currentPos.second)
+
+                    val currentWaypointIndex = viewModel.currentIndex
+                    val targetWaypointIndex = minOf(currentWaypointIndex + 1, waypoints.size - 1)
+                    val targetWp = waypoints[targetWaypointIndex]
+                    val targetScreen = project(targetWp.x, targetWp.y)
+
+                    // 3a. Dashed Target Line
+                    if (posScreen != targetScreen) {
+                        drawLine(
+                            color = Color(0xFFD32F2F),
+                            start = posScreen,
+                            end = targetScreen,
+                            strokeWidth = 3f,
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(15f, 10f), 0f)
+                        )
+                    }
+
+                    // 3b. Current Location Marker
+                    drawCircle(
+                        color = Color(0xFF1976D2),
+                        radius = 8f,
+                        center = posScreen
+                    )
+                    drawCircle(
+                        color = Color.White,
+                        radius = 3.5f,
+                        center = posScreen
+                    )
+
+                    // 3c. Stabilized Heading Arrow
+                    val stabilizedBearing = CoordinateUtils.calculateStabilizedHikerBearing(breadcrumbs)
+                    if (stabilizedBearing != null) {
+                        val rad = Math.toRadians(stabilizedBearing)
+                        val ux = sin(rad).toFloat()
+                        val uy = -cos(rad).toFloat()
+
+                        val arrowLength = 22f
+                        val tip = Offset(posScreen.x + ux * arrowLength, posScreen.y + uy * arrowLength)
+
+                        val px = -uy
+                        val py = ux
+                        val wingBack = 8f
+                        val wingWidth = 6f
+
+                        val w1 = Offset(
+                            tip.x - ux * wingBack + px * wingWidth,
+                            tip.y - uy * wingBack + py * wingWidth
+                        )
+                        val w2 = Offset(
+                            tip.x - ux * wingBack - px * wingWidth,
+                            tip.y - uy * wingBack - py * wingWidth
+                        )
+
+                        val arrowPath = Path().apply {
+                            moveTo(tip.x, tip.y)
+                            lineTo(w1.x, w1.y)
+                            lineTo(w2.x, w2.y)
+                            close()
+                        }
+
+                        drawLine(
+                            color = Color(0xFF0D47A1),
+                            start = posScreen,
+                            end = tip,
+                            strokeWidth = 3f
+                        )
+                        drawPath(
+                            path = arrowPath,
+                            color = Color(0xFF0D47A1)
+                        )
                     }
 
                     // 4. Waypoint Label Deduplication & Drawing
@@ -266,11 +393,33 @@ fun MapScreen(
                         groupedWps.values.forEach { group ->
                             val wp = group.first()
                             val p = project(wp.x, wp.y)
-                            val isCurrent = group.any { waypoints.indexOf(it) == viewModel.currentIndex }
-                            val radius = if (isCurrent) 14f else 8f
+                            val isCurrent = group.any { waypoints.indexOf(it) == currentWaypointIndex }
+                            val isTarget = group.any { waypoints.indexOf(it) == targetWaypointIndex }
+
+                            val radius = when {
+                                isCurrent -> 14f
+                                isTarget -> 12f
+                                else -> 8f
+                            }
+
+                            // Render target waypoint with a distinct visual highlight (prominent accent outline / ring)
+                            if (isTarget && targetWaypointIndex != currentWaypointIndex) {
+                                drawCircle(
+                                    color = Color(0xFFFF8F00), // Amber / Gold accent outline
+                                    radius = radius + 5f,
+                                    center = p,
+                                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f)
+                                )
+                            }
+
+                            val markerColor = when {
+                                isCurrent -> Color(0xFFD32F2F)
+                                isTarget -> Color(0xFFFF8F00)
+                                else -> Color(0xFF424242)
+                            }
 
                             drawCircle(
-                                color = if (isCurrent) Color(0xFFD32F2F) else Color(0xFF424242),
+                                color = markerColor,
                                 radius = radius,
                                 center = p
                             )
@@ -353,8 +502,6 @@ fun MapScreen(
                     }
 
                     // 5. Out-of-Bounds Indicator
-                    val currentPos = viewModel.getCurrentPositionMetric()
-                    val posScreen = project(currentPos.first, currentPos.second)
                     if (posScreen.x < 0f || posScreen.x > canvasWidth || posScreen.y < 0f || posScreen.y > canvasHeight) {
                         val currWp = waypoints[viewModel.currentIndex]
                         val dist = CoordinateUtils.calculateDistance(currWp.x, currWp.y, currentPos.first, currentPos.second)

@@ -6,7 +6,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
@@ -36,6 +35,8 @@ import com.example.seebeepee.model.HikeState
 import com.example.seebeepee.model.RouteManager
 import com.example.seebeepee.util.AppPreferences
 import com.example.seebeepee.util.CoordinateUtils
+import com.example.seebeepee.util.HeadingSmoother
+import com.example.seebeepee.util.PersistenceGatekeeper
 import com.example.seebeepee.util.TtsManager
 import kotlinx.coroutines.*
 import kotlin.math.sin
@@ -54,6 +55,14 @@ class HikingForegroundService : Service() {
     private var audioTrack: AudioTrack? = null
     private var audioStreamJob: Job? = null
 
+    // Course correction variables
+    private var lastCourseCorrectionTime: Long = 0L
+    private val courseCorrectionCooldownMs: Long = 15000L // 15 seconds cooldown
+    private lateinit var headingSmoother: HeadingSmoother
+    //private val headingSmoother = HeadingSmoother(alpha = 0.3)
+
+    private var persistenceGatekeeper: PersistenceGatekeeper? = null
+
     companion object {
         const val CHANNEL_ID = "HikingServiceChannel"
         const val NOTIFICATION_ID = 1001
@@ -67,6 +76,10 @@ class HikingForegroundService : Service() {
         setupMediaSession()
         requestAudioFocus()
         startInaudibleAudioStream()
+
+        val prefs = AppPreferences(applicationContext)
+        headingSmoother = HeadingSmoother(alpha = prefs.headingSmoothingAlpha)
+
         createNotificationChannel()
         setupLocationCallback()
     }
@@ -199,8 +212,83 @@ class HikingForegroundService : Service() {
 
                     val breadcrumb = Breadcrumb(x, y, alt, timestamp)
                     RouteManager.addBreadcrumb(breadcrumb)
+
+                    checkWaypointAdvancement()
+                    checkCourseCorrectionAlert()
                 }
             }
+        }
+    }
+
+    private fun checkWaypointAdvancement() {
+        if (RouteManager.hikeState != HikeState.HIKING) return
+
+        val prefs = AppPreferences(applicationContext)
+        val result = RouteManager.processWaypointAdvancement(prefs)
+
+        if (result.advanced) {
+            RouteManager.currentWaypointIndex = result.newIndex
+            persistenceGatekeeper?.reset()
+            RouteManager.logError("Auto-advanced waypoint to index ${result.newIndex}: ${result.reachedWaypoint?.name}. Reason: ${result.reason}")
+
+            result.ttsAnnouncement?.let { announcement ->
+                requestAudioFocus()
+                ttsManager.speak(announcement)
+            }
+        }
+    }
+
+    private fun checkCourseCorrectionAlert() {
+        if (RouteManager.hikeState != HikeState.HIKING) return
+
+        val prefs = AppPreferences(applicationContext)
+        val requiredFixes = prefs.persistenceFixes
+        if (persistenceGatekeeper == null || persistenceGatekeeper?.requiredFixes != requiredFixes) {
+            persistenceGatekeeper = PersistenceGatekeeper(requiredFixes)
+        }
+
+        val breadcrumbs = RouteManager.breadcrumbs
+        val waypoints = RouteManager.waypoints
+        if (waypoints.isEmpty() || breadcrumbs.size < 2) return
+
+        // 1. Low-Speed / Stationary Suppression Guard
+        val currentSpeed = CoordinateUtils.calculateRecentSpeed(breadcrumbs, prefs.loopbackDistance)
+        if (currentSpeed < prefs.lowSpeedCutoff) {
+            persistenceGatekeeper?.reset()
+            return
+        }
+
+        // 2. Distance Loopback Window
+        val rawBearing = CoordinateUtils.calculateLoopbackBearing(breadcrumbs, prefs.loopbackDistance) ?: return
+
+        // 3. Vector Exponential Moving Average (Vector EMA)
+        val smoothedBearing = headingSmoother.update(rawBearing)
+
+        // 4. Deviation calculation
+        val idx = RouteManager.currentWaypointIndex.coerceIn(0, waypoints.size - 1)
+        val targetWp = if (idx < waypoints.size - 1) waypoints[idx + 1] else waypoints[idx]
+        val lastBc = breadcrumbs.last()
+        val targetBearing = CoordinateUtils.calculateBearing(lastBc.x, lastBc.y, targetWp.x, targetWp.y)
+
+        val deltaB = CoordinateUtils.computeAngularDeviation(smoothedBearing, targetBearing)
+        val isOffCourse = kotlin.math.abs(deltaB) > prefs.coneAngle
+
+        // 5. Hysteresis & Persistence Gatekeeper
+        val alertTriggered = persistenceGatekeeper?.update(isOffCourse) ?: false
+        if (!alertTriggered) return
+
+        // 6. Cooldown Check & Spoken Warning
+        val now = System.currentTimeMillis()
+        if (now - lastCourseCorrectionTime < courseCorrectionCooldownMs) {
+            return
+        }
+
+        val message = TtsManager.generateCourseCorrectionMessage(smoothedBearing, targetBearing, prefs.coneAngle)
+        if (message != null) {
+            requestAudioFocus()
+            ttsManager.speak(message)
+            lastCourseCorrectionTime = now
+            persistenceGatekeeper?.reset()
         }
     }
 
@@ -281,27 +369,7 @@ class HikingForegroundService : Service() {
 
     private fun speakCurrentLegStats() {
         requestAudioFocus()
-
-        val waypoints = RouteManager.waypoints
-        val idx = RouteManager.currentWaypointIndex
-        val precision = AppPreferences(applicationContext).gridReferencePrecision
-
-        if (waypoints.isNotEmpty() && idx < waypoints.size) {
-            val current = waypoints[idx]
-            val next = if (idx < waypoints.size - 1) waypoints[idx + 1] else null
-            if (next != null) {
-                val dist = CoordinateUtils.calculateDistance(current.x, current.y, next.x, next.y)
-                val bearing = CoordinateUtils.calculateBearing(current.x, current.y, next.x, next.y)
-                val gridRef = CoordinateUtils.formatGridReferenceWithLetter(next.x, next.y, precision)
-                val text = "Leg to ${next.name}, grid reference $gridRef. Bearing ${bearing.toInt()} degrees. Distance ${dist.toInt()} meters."
-                ttsManager.speak(text)
-            } else {
-                val gridRef = CoordinateUtils.formatGridReferenceWithLetter(current.x, current.y, precision)
-                ttsManager.speak("Currently at final waypoint ${current.name}, grid reference $gridRef.")
-            }
-        } else {
-            ttsManager.speak("No active route loaded.")
-        }
+        ttsManager.speakLiveStatus()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -313,7 +381,7 @@ class HikingForegroundService : Service() {
 
         when (intent?.action) {
             ACTION_STOP -> {
-                RouteManager.hikeState = HikeState.IDLE
+                RouteManager.stopHike(AppPreferences(applicationContext))
                 stopLocationUpdates()
                 try {
                     stopForeground(STOP_FOREGROUND_REMOVE)
@@ -324,7 +392,10 @@ class HikingForegroundService : Service() {
                 return START_NOT_STICKY
             }
             else -> {
-                RouteManager.hikeState = HikeState.HIKING
+                RouteManager.startHike(AppPreferences(applicationContext))
+                lastCourseCorrectionTime = 0L
+                headingSmoother.reset()
+                persistenceGatekeeper?.reset()
                 val hasFine = ActivityCompat.checkSelfPermission(
                     this,
                     Manifest.permission.ACCESS_FINE_LOCATION
